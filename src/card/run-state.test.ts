@@ -945,7 +945,7 @@ describe('RunState', () => {
   });
 
   // ===========================================================================
-  // 信息保真 model / notices / omittedBlocks / reasoningTokens
+  // 信息保真 model / notices / omittedBlocks
   // ===========================================================================
 
   it('test_anchor_system_init_stores_model', () => {
@@ -1093,14 +1093,6 @@ describe('RunState', () => {
     } as never);
 
     expect(state.footer).toBe('tool_running');
-  });
-
-  it('test_anchor_finishRun_threads_reasoningTokens', () => {
-    // pi usage.reasoning 累加 → finish meta → RunState（统计行渲染）。
-    const finished = finishRun(createInitialRunState('run-c1-rt'), 'done', {
-      reasoningTokens: 100,
-    });
-    expect(finished.reasoningTokens).toBe(100);
   });
 
   it('test_anchor_assistant_content_summary_passthrough_to_tool_entry', () => {

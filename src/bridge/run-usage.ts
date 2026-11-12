@@ -21,7 +21,6 @@ export class RunUsageCollector {
   private liveCacheRead?: number;
   private liveCacheCreation?: number;
   private liveTotal?: number;
-  private liveReasoningTokens?: number;
   /** finalize() 之后的最终口径；meta() 的唯一数据源。 */
   private resolved: UsageSnapshot = {};
   resultNotSuccess = false;
@@ -52,7 +51,6 @@ export class RunUsageCollector {
       this.liveCacheCreation = usage.cacheCreationTokens;
     }
     if (usage.totalTokens !== undefined) this.liveTotal = usage.totalTokens;
-    if (usage.reasoningTokens !== undefined) this.liveReasoningTokens = usage.reasoningTokens;
   }
 
   finalize(
@@ -70,7 +68,6 @@ export class RunUsageCollector {
       cacheReadTokens: this.liveCacheRead,
       cacheCreationTokens: this.liveCacheCreation,
       totalTokens: this.liveTotal,
-      reasoningTokens: this.liveReasoningTokens,
     };
 
     const useLiveFlowScope =

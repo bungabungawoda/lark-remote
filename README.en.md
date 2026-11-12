@@ -51,7 +51,7 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# default agent: claude | codex | opencode | pi | kimi | dsh (default: claude)
+# default agent: claude | codex | opencode | pi | kimi | dsh | codebuddy | qoder (default: claude)
 defaultAgent: claude
 
 claude:
@@ -107,6 +107,7 @@ Your original message also gets an emoji reaction: `Typing` while the run is in 
 | `/ps` | - | Whether a process is running |
 | `/restart` | - | In-place lark-remote self-restart (new process takes over with the same config) |
 | `/clone [name]` | - | Clone lark-remote: copies the current config into a new directory and walks you through creating a brand-new Feishu app by QR scan; on success it binds, syncs state, and launches the new instance |
+| `/update` | `/u` | Check npm for the latest version and self-update (`/update check` only checks; unsupported under `--dev`) |
 | `/config get\|set` | `/c` | View/change runtime config (agent-aware card) |
 | `/order save\|list\|edit` | `/o` | Save, list, or edit frequently used prompts |
 | `!<cmd>` | - | Run a bash command with streaming card output (bypasses the serial queue) |

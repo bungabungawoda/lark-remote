@@ -217,16 +217,6 @@ function tokenLines(usage: UsageStatsInput | undefined, parts: CumulativeParts):
   return estimateTokenLines(usage, parts);
 }
 
-function trailingLines(usage: UsageStatsInput | undefined): string[] {
-  const lines: string[] = [];
-  // Cost 行已从用量区彻底移除（演示场景不暴露费用；credits / USD 两种形态
-  // 都不再渲染，result 事件里的对应字段按外来未知字段忽略）。
-  if (usage?.reasoningTokens !== undefined && usage.reasoningTokens > 0) {
-    lines.push(`Reasoning token - ${formatTokenK(usage.reasoningTokens)}`);
-  }
-  return lines;
-}
-
 /**
  * Format usage stats (context length, compact count, cache tokens) into a display string.
  * Each stat on its own line with blank lines between sections.
@@ -235,9 +225,5 @@ function trailingLines(usage: UsageStatsInput | undefined): string[] {
  */
 export function formatUsageStats(usage?: UsageStatsInput, options?: UsageDisplayOptions): string {
   const parts = cumulativeParts(usage);
-  return [
-    ...headerLines(usage, options),
-    ...tokenLines(usage, parts),
-    ...trailingLines(usage),
-  ].join('\n');
+  return [...headerLines(usage, options), ...tokenLines(usage, parts)].join('\n');
 }

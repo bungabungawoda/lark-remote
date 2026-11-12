@@ -5,7 +5,7 @@
 > 本文展开 `design.md` §9.21，回答三个问题：
 > 1. 卡片上的 Input / Output / Total / Context / 累计分别是什么 scope；
 > 2. 为什么“多步 run 低报”在 opencode 上修过一次又复发；
-> 3. 当前七个 session reader 各自负责哪条边界，还有哪些同类缺口。
+> 3. 当前各 session reader（8 个注册，名单单源 `src/agent-kinds.ts`；qoder 复用 claude reader 内核，不单列）各自负责哪条边界，还有哪些同类缺口。
 
 ---
 
@@ -44,7 +44,7 @@ session reader ────┘        （flow: live 优先；context/compact: js
   - dsh：translator 在一次 run 内累加 durable `assistant/message.usage`。
   - opencode / kimi：ACP `usage_update` **只有** `used`（上下文占用）、`size` 与 cost，**没有 input/output 拆分**，因此 flow 永远只能走 jsonl。
   - codebuddy：ACP `usage_update._meta.usage` 带每次模型请求的 input/output，translator 按 turn 累加；但 CodeBuddy 的会话 jsonl 只在每个 turn 的最后一条 assistant 消息上落 usage（`requests: 1`），reader 另从 CodeBuddy 的逐请求日志重建 flow/cumulative。
-- **reader 兜底**：七个 `AgentSessionReader.readSessionContent` 产出 `AgentSessionUsage`。codebuddy 的 reader 优先读 CodeBuddy 的逐请求日志（jsonl 只有每个 turn 的末次请求），日志不可用时才回退 jsonl。
+- **reader 兜底**：全部 8 个 `AgentSessionReader.readSessionContent` 产出 `AgentSessionUsage`（名单单源 `src/agent-kinds.ts` 的 `AGENT_KINDS`）。codebuddy 的 reader 优先读 CodeBuddy 的逐请求日志（jsonl 只有每个 turn 的末次请求），日志不可用时才回退 jsonl。
 - **reader 还有第二消费面**：`/resume`、自动恢复卡、完成通知卡直接展示 `readSessionContent` 的 usage。因此 reader 的 scope 正确性不能只靠“done 卡有 live 兜着”。
 
 ---
@@ -91,7 +91,7 @@ session reader ────┘        （flow: live 优先；context/compact: js
 
 - claude/pi 的 jsonl 没有原生 turn 标记，用真实 user 消息划边界；“最后一条 assistant 消息”只等于单请求 turn 的本 run。
 - qoder 复用 claude reader 内核，scope 与 claude 相同，不单列。
-- **末 turn 为空一律显示 0**（kimi / opencode v2）：当前契约是“末个 turn”，不是“末个非空 turn”。想改成后者属于契约变更，要同时动 §9.21、七个 reader、测试和卡片文案。
+- **末 turn 为空一律显示 0**（kimi / opencode v2）：当前契约是“末个 turn”，不是“末个非空 turn”。想改成后者属于契约变更，要同时动 §9.21、全部 reader、测试和卡片文案。
 - 无从划分 turn 时的兜底分两类：claude / pi / dsh 退回末条采样；kimi 的整份 wire 没有 `turn.prompt`（旧数据/截断）时沿用「整份文件 = 一个 turn」。
 - codex 的 context 不含末轮 output 是既有文档约定，与其他 reader 不一致；改口径时需要同步 §9.21 与所有 reader。
 - 子 agent：kimi 的子 agent wire 进累计、不进 flow；codex 的 subagent rollout 文件在列表和读取时整体排除；claude 的 `isSidechain` 目前只挡 turn 边界，usage 聚合仍不过滤，见 §5。
@@ -145,7 +145,7 @@ runScopeUsage({
 6. 累计 ≥ 本 run。
 7. 子 agent usage → 只进累计（kimi/opencode 等适用时）。
 
-只断言“末条采样等于某个数”的测试固化的是实现快照：实现改错了它照样变绿，这也正是同一个低报反复复发的原因。当前落地面是共享断言库 `tests/lib/usage-scope-contract.ts`，七个 reader 的回归用例共用；「新 reader 只交 fixture」的参数化 harness 仍待补（见 §5）。
+只断言“末条采样等于某个数”的测试固化的是实现快照：实现改错了它照样变绿，这也正是同一个低报反复复发的原因。当前落地面是共享断言库 `tests/lib/usage-scope-contract.ts`，claude / pi / dsh / kimi / opencode / codebuddy 的回归用例共用（codex 由自己的 rollout 测试断言）；「新 reader 只交 fixture」的参数化 harness 仍待补（见 §5）。
 
 ### 6.3 迁移规程
 

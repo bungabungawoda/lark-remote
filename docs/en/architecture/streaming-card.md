@@ -37,21 +37,17 @@ Therefore:
 
 ## 3. Data Flow
 
-```text
-Normal Feishu message
-  → Bridge work queue
-  → runner.run() (registry resolves the agent instance)
-  → AgentEvent
-  → RunState reducer
-  → renderRunCard()
-  → CardStreamController.update()
-  → Same message_id full-card patch
+```mermaid
+flowchart TD
+    msg["Normal Feishu message"] --> q["Bridge work queue<br/>(serial per-cwd lanes)"]
+    q --> run["runner.run()<br/>(registry resolves the agent instance)"]
+    run -- "AgentEvent stream" --> reduce["RunState reducer"]
+    reduce --> render["renderRunCard()"]
+    render -- "controller.update()" --> patch["Full-card patch on the same message_id<br/>(SDK throttle + FIFO)"]
 
-/stop or stop cardAction
-  → control lane (bypasses work queue)
-  → local activeRun? Bridge.interruptCurrentRun()
-  → otherwise HostTurnStop(sessionId) → DshRunner.cancelHostTurn()
-  → RunCardSession.finish(interrupted) + runner.stop() / session/cancel
+    stop["/stop or stop cardAction<br/>(control lane, bypasses work queue)"] --> hit{"Local activeRun hit?"}
+    hit -- "yes" --> interrupt["Bridge.interruptCurrentRun()<br/>→ finish(interrupted) + runner.stop()"]
+    hit -- "no" --> host["HostTurnStop(sessionId)<br/>→ DshRunner.cancelHostTurn()<br/>(session/cancel + idle check)"]
 ```
 
 Core modules:

@@ -5,7 +5,7 @@
 > This document expands `design.md` §9.21 and answers three questions:
 > 1. What scope do Input / Output / Total / Context / cumulative represent on a card?
 > 2. Why did the "multi-step run under-reporting" bug reappear after it had already been fixed for opencode?
-> 3. Which turn boundary does each of the six session readers own, and what same-class gaps remain?
+> 3. Which turn boundary does each session reader own (8 registered; the roster's single source is `AGENT_KINDS` in `src/agent-kinds.ts`; qoder reuses the claude reader kernel and is not listed separately), and what same-class gaps remain?
 
 ---
 
@@ -43,7 +43,8 @@ session reader ────┘        (flow: live first; context/compact: jsonl 
   - codex: app-server `thread/tokenUsage/updated` is gated by `turnId` and accumulated per turn.
   - dsh: the translator accumulates durable `assistant/message.usage` within one run.
   - opencode / kimi: ACP `usage_update` carries **only** `used` (context occupancy), `size`, and cost — **no input/output split**, so flow can only come from jsonl.
-- **jsonl fallback**: all six `AgentSessionReader.readSessionContent` implementations produce `AgentSessionUsage`.
+  - codebuddy: ACP `usage_update._meta.usage` carries per-request input/output and the translator sums per turn; CodeBuddy's session jsonl only records usage on the last assistant message of each turn (`requests: 1`), so the reader additionally rebuilds flow/cumulative from CodeBuddy's per-request logs.
+- **jsonl fallback**: all 8 `AgentSessionReader.readSessionContent` implementations produce `AgentSessionUsage` (roster single-sourced from `AGENT_KINDS` in `src/agent-kinds.ts`).
 - **Readers have a second consumer**: `/resume`, the auto-resume card, and the completion notification card display `readSessionContent` usage directly. Reader scope correctness cannot rely on "the done card has live data".
 
 ---
@@ -59,6 +60,7 @@ session reader ────┘        (flow: live first; context/compact: jsonl 
 | 2026-10-17 | opencode supports 2.0 exports; v2 reader added | v2 attaches tokens to messages; reuses "last assistant message" semantics |
 | 2026-10-30 | opencode v1/v2 + kimi readers switch to "sum of every sample in the last turn" | Second fix, with an anchor test |
 | 2026-11-01 | claude/pi/dsh readers also sum the last real-user turn; kimi and opencode v2 empty turns report 0; `usesLiveResultEvents()` split out of `usageAuthority` | All six readers now share one contract; scope assertions centralized in `tests/lib/usage-scope-contract.ts` |
+| 2026-11-08 | codebuddy runner's flow authority switched to live; the reader rebuilds flow/cumulative from CodeBuddy's per-request logs (jsonl records only the last request per turn) | New log reader added; falls back to jsonl when logs are unavailable (lower bound) |
 
 ### Why It Reappeared
 
@@ -83,11 +85,13 @@ session reader ────┘        (flow: live first; context/compact: jsonl 
 | kimi | `turn.prompt` | Sum of main-wire `usage.record` in the last turn; empty turn = 0, never the previous turn | Last main-wire usage occupancy | Main wire + all sub-agent wires | Empty turn reports 0 |
 | codex | `event_msg.task_started` | Sum of every `token_count` sample in the last turn | Last raw `input_tokens` (includes cache, **excludes output**, existing convention) | Last `total_token_usage` | Sums the last turn (2026-10-12) |
 | dsh | `turn/start` – `turn/end`; a `turn/start` without `turn/end` is the current boundary | `turnUsage ?? lastTurnUsage ?? last-sample fallback`, in-flight wins | `input + last output + cacheRead + cacheWrite`: only the last sample's output — summing the whole turn's output double-counts | Sum of all usage | In-flight wins; context double-count removed |
+| codebuddy | The log line's `conversation_request_id` (same source as the jsonl's `providerData.conversationRequestId`) | Sum of all `agent.model_call.completed` log lines in the last turn; falls back to the jsonl's last request when logs are unavailable | Last request `input+output+cache` (input already excludes cache) | Sum of log lines over all turns; falls back to jsonl when logs are unavailable | Logs first + fallback (2026-11-08) |
 
 Notes:
 
 - claude/pi jsonl has no native turn marker, so a real user message serves as the boundary. "Last assistant message" only equals this-run for single-request turns.
-- **An empty last turn reports 0** (kimi / opencode v2): the current contract is "the last turn", not "the last non-empty turn". Switching to the latter is a contract change — §9.21, all six readers, tests, and card copy have to move together.
+- qoder reuses the claude reader kernel; its scope is the same as claude's and is not listed separately.
+- **An empty last turn reports 0** (kimi / opencode v2): the current contract is "the last turn", not "the last non-empty turn". Switching to the latter is a contract change — §9.21, every reader, tests, and card copy have to move together.
 - Fallbacks when no turn can be delimited split two ways: claude / pi / dsh fall back to the last sample; a kimi wire with no `turn.prompt` anywhere (legacy or truncated) keeps "whole file = one turn".
 - codex context excluding the last turn's output is an existing documented convention but inconsistent with other readers; changing it requires updating §9.21 and every reader.
 - Sub-agents: kimi sub-agent wires enter cumulative, not flow; codex sub-agent rollout files are excluded from lists and reads; claude's `isSidechain` currently only blocks turn boundaries — usage aggregation does not filter it, see §5.
@@ -101,6 +105,7 @@ Notes:
 - **Claude sidechain only blocks boundaries; it does not filter aggregation.** `scalarScan` excludes `isSidechain` only inside the turn-boundary check `isRealUserPrompt`; usage aggregation never consults it. If a real Claude JSONL file mixes sidechain messages, the impact is not limited to the last sample — **cumulative is also inflated**. No real fixture proves that mixing happens today, so this stays an unverified item. Before handling it, confirm three things with a sanitized real JSONL: whether sidechain messages land in the same file, whether message ids are unique, and whether the turn boundary is identifiable. Do not bundle it with a numeric-semantics change.
 - **run-scope aggregation is still hand-written per reader.** `UsageAccumulator` only offers `last` / `totals`, with no "reset at a turn boundary" semantics, and the `cumulativeUsageFields` comment still says "opencode keeps its own conditional assignment". Every reader re-implements "find boundary + sum + take watermark". The shared primitive is described in §6.1 and has not landed.
 - **The parameterized contract harness has not landed.** Cross-reader scope assertions now live in `tests/lib/usage-scope-contract.ts` and are shared by the claude / pi / dsh / kimi / opencode regression tests (codex still asserts in its own rollout tests); the "a new reader only supplies a fixture" parameterized harness from §6.2 is still missing.
+- **codebuddy's exact usage depends on CodeBuddy's diagnostic logs.** The session jsonl records only the last request's usage per turn; per-request data lives only in `logs/<date>/<basename>__<md5(cwd)>.log`'s `agent.model_call.completed` lines. When the logs are cleaned up, drift in format, or file logging is disabled, the reader falls back to jsonl and both flow and cumulative degrade to the "last request per turn" lower bound. That log is a CodeBuddy internal format; the reader only fail-soft-parses it and does not treat it as a stable protocol.
 - **opencode tests still carry an obsolete comment.** `per-turn = last step-finish (overwrites)` contradicts the §1 invariant; it is documentation debt waiting to be cleaned.
 - **Field names do not express scope.** `AgentSessionUsage.inputTokens` / `outputTokens` give no hint that they mean "this run", so readers and callers are constrained only by comments and by this document. The rename/annotate direction is in §6.4.
 
@@ -140,7 +145,7 @@ Every reader must answer these seven; the answers come from the scope contract, 
 6. Cumulative ≥ this run.
 7. Sub-agent usage → cumulative only (where applicable).
 
-A test that only asserts "the last sample equals some number" freezes the implementation, not the contract: it stays green when the implementation is changed incorrectly, which is exactly how the same under-reporting kept coming back. What exists today is the shared assertion library `tests/lib/usage-scope-contract.ts`, reused by the claude / pi / dsh / kimi / opencode regression tests; the parameterized harness is still to be added (see §5).
+A test that only asserts "the last sample equals some number" freezes the implementation, not the contract: it stays green when the implementation is changed incorrectly, which is exactly how the same under-reporting kept coming back. What exists today is the shared assertion library `tests/lib/usage-scope-contract.ts`, reused by the claude / pi / dsh / kimi / opencode / codebuddy regression tests; the parameterized harness is still to be added (see §5).
 
 ### 6.3 Migration rule
 

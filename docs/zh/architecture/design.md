@@ -2,7 +2,8 @@
 
 # lark-remote 设计文档
 
-把飞书私聊消息桥接到本地 coding agent CLI（Claude Code / Codex / opencode / pi / Kimi / DSH）。
+把飞书私聊消息桥接到本地 coding agent CLI（Claude Code / Codex / opencode / pi / Kimi / DSH /
+CodeBuddy / Qoder）。
 用户发消息或 `/命令`，程序把消息传给 agent 进程，读取事件流，把 thinking / text / tool
 摘要实时更新到同一张飞书卡片。所有飞书
 I/O 由程序完成，不修改 agent 的 system prompt，只支持 p2p 私聊，单用户。
@@ -26,28 +27,25 @@ lark-remote 不处理 OAuth，首次未登录会导致 claude 进程挂起。
 
 ## 2. 架构
 
+首次接触本项目、想先看懂大图和一条消息的完整旅程，请先读
+[how-it-works.md](how-it-works.md)；本节起面向要改代码的读者。
+
+```mermaid
+flowchart TD
+    feishu["飞书服务器"] -- "WebSocket 长连接<br/>（@larksuite/channel SDK）" --> lock["InstanceLock<br/>同一 configDir 只允许一个主进程"]
+    lock --> connector["FeishuConnector<br/>收 p2p message + cardAction<br/>发卡片 / 更新卡片 / 传文件"]
+    connector --> contact["StartupContact<br/>记录最近私聊；连接成功后发启动通知"]
+    contact --> bridge["Bridge<br/>普通消息走 work queue（按 cwd 分 lane）<br/>stop 走控制 lane；非命令消息 → forwardToClaude"]
+    bridge -- "getRunner()" --> registry["AgentRegistry<br/>（各 agent runner 注册表）"]
+    bridge -- "完成通知卡" --> readers["SessionReaderRegistry<br/>（各 agent 会话文件读取器）"]
+    bridge --> runner["ClaudeRunner 等各 agent runner<br/>长驻交互会话 / ACP / app-server / HTTP+WS<br/>产出统一 AgentEvent 流"]
+    bridge --> cardsession["RunCardSession<br/>RunState reduce → CardKit 2.0 render → 原消息 patch"]
+    cardsession --> connector
 ```
-飞书服务器
-    │ WebSocket（@larksuite/channel SDK）
-    ▼
-InstanceLock             同一 configDir 只允许一个 lark-remote 主进程
-    │
-FeishuConnector          接收 p2p message + cardAction，发送/更新卡片/文件
-    │
-StartupContact           记录最近私聊；连接成功后发送含启动时间和 pid 的通知
-    │
-Bridge                   普通 work queue + stop control lane；非命令消息 → forwardToClaude
-    │                       getRunner() 走 AgentRegistry，sendCompletionNotificationCard 走 SessionReaderRegistry
-CommandRouter            /开头 → 内置 handler；否则委托 bridge.forwardToClaude
-    │                       session 读取走 SessionReaderRegistry（非直接 claude/sessions import）
-    │
-ClaudeRunner             长驻交互会话（ClaudeSession），stream-json 双向通道，
-                         control_request → ApprovalCoordinator → 审批区，yield AgentEvent
-    │
-RunCardSession           RunState reduce → CardKit 2.0 render → 原消息 patch
-    │
-FeishuConnector.streamCard() / updateCard()
-```
+
+- `CommandRouter`：`/` 开头 → 内置 handler；否则委托 `bridge.forwardToClaude`。session 读取一律走 `SessionReaderRegistry`，不直接 import 具体某个 agent 的 sessions 实现。
+- `ClaudeRunner`（以 Claude 为例）：长驻交互会话（ClaudeSession），stream-json 双向通道，`control_request` → `ApprovalCoordinator` → 审批区，yield `AgentEvent`。其余 agent 走同一骨架，差异在各 runner 的协议适配层。
+- 飞书 I/O 全部由 `FeishuConnector` 完成；卡片更新由 `RunCardSession` 经 `streamCard()` / `updateCard()` 落到同一张卡。
 
 ---
 
@@ -156,11 +154,14 @@ const sessions = new Map<string, SessionEntry>();
 
 ## 5. 命令列表
 
+完整命令用法（含参数细节与示例）见 [`docs/zh/usage.md`](../usage.md) 第五节，此处只列清单：
+
 | 命令                      | 行为                                                                                                                         |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `/new`                    | 清 session（保留 cwd）                                                                                                       |
 | `/cd <path>`              | 切换 cwd，清 session                                                                                                         |
-| `/ls [dir]`               | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；>30 条分页                                                      |
+| `/ls [dir\|file]`         | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；>30 条分页                                                      |
+| `/download <path>` `/d`   | 直接发送指定文件到飞书（上限 30MB）                                                                                          |
 | `/ws save/use/remove`     | 命名目录别名管理（`/ws` 默认 list）                                                                                          |
 | `/resume [list\|id]`      | 列出/切换当前 agent 的 session（`/resume [agent] [N]` 双参数，N clamp [1,5] 作为页大小）；列表分页（`resume.page` 回调翻页） |
 | `/active`                 | 列出本进程内存中正在进行中的任务（Agent + Bash）                                                                             |
@@ -168,10 +169,12 @@ const sessions = new Map<string, SessionEntry>();
 | `/stop`                   | SIGTERM 立刻 SIGKILL（不等 grace）                                                                                           |
 | `/ps`                     | 是否有进程在跑                                                                                                               |
 | `/help`                   | 命令列表                                                                                                                     |
-| `/exit`                   | 退出 lark-remote                                                                                                             |
+| `/exit`                   | 退出 lark-remote（别名 `/quit`）                                                                                             |
 | `/restart`                | 原地自重启 lark-remote：spawn detached 继任者 → 旧进程释放单例锁退出                                                         |
+| `/update` `/u`            | 查询 npm 最新版本并自升级（`/update check` 只查不装）                                                                        |
+| `/clone [name]`           | 复制分身：克隆配置到新目录并扫码创建新应用，完成后自动绑定并拉起新实例                                                       |
 | `/config get\|set`        | 查改运行时配置（卡片交互，agent-aware 字段）                                                                                 |
-| `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，元素预算见 `docs/zh/cardkit-layout.md`）  |
+| `/order save\|list\|edit\|alias` | 保存、列出或编辑常用指令（保留别名/使用统计，`$name` 快捷展开）；>8 条分页（`order.page` 原地翻页，元素预算见 `docs/zh/cardkit-layout.md`） |
 | `!<cmd>`                  | 执行 bash 命令并流式输出到卡片（绕过串行队列）                                                                               |
 
 ---
@@ -300,7 +303,8 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# 默认 agent 展示顺序（/config 卡片）：codex → claude → opencode → pi → kimi → dsh；
+# 默认 agent 展示顺序（/config 卡片，单源 src/router/config/index.ts 的 DEFAULT_AGENT_ORDER）：
+# codex → claude → opencode → pi → kimi → dsh → codebuddy → qoder；
 # 未安装（CLI 不在 PATH）的 agent 排到后面。defaultAgent 决定 lark-remote spawn
 # 哪个 agent、run 卡片 header 显示哪个 agent 名
 defaultAgent: claude
@@ -368,6 +372,9 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 [`docs/zh/usage.md`](../usage.md)（kimi 为纯 ACP 模式，已无 cli/acp 切换）。
 `dsh` 的 host/token/credentialsFile/preset/permissionPreset/provider/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
 `docs/zh/usage.md`。
+CodeBuddy / Qoder / opencode / pi 的 agents.* 配置字段不在本节重复，完整 YAML 见
+[`docs/zh/usage.md`](../usage.md) 第三节；agent 全名单单源是
+`src/agent-kinds.ts` 的 `AGENT_KINDS`。
 
 DSH 的 launch token 每个进程随机生成，重启即失效；它的浏览器签名密钥则持久化在
 `$DSH_HOME/.credentials.yaml` 的 `client-connection/browser-session` 记录里。
@@ -527,7 +534,7 @@ resolve 到新 cwd 的竞态——先到者占 `activeRuns`，后到者 busy-dro
   `maxEvents: 5`，发送走 `sendResult`（`enforceCardBudget` 兜底），不再直连
   connector——长会话卡片不会再超 28KB 被飞书静默拒绝。
 - bash `!` 进程：`BashProcessRunner` 在进程存活期注册到进程级 exit
-  分发器（与 6 个 agent runner 同源；DSH 的全局进程不归 runner 所有，故不注册），`/restart`/SIGTERM 时组杀 bash 及其子
+  分发器（与各 agent runner 同源；DSH 的全局进程不归 runner 所有，故不注册），`/restart`/SIGTERM 时组杀 bash 及其子
   进程，run() 结束注销——`!sleep 3600` 不再孤儿化。
 - 缓存：session 读取缓存统一「TTL 用缓存写入时间 + 有界
   LRU/FIFO」。
@@ -603,7 +610,8 @@ cardAction）。300ms 挡飞书瞬时重投递（<100ms 级），放过用户连
 
 同一 `configDir` 只能同时运行一个 lark-remote 主进程。启动时 `InstanceLock` 读取 `<configDir>/lark-remote.pid`：若 pid 仍存活则拒绝启动，若 pid 已不存在则覆盖陈旧锁；进程退出时只清理属于当前 pid 的锁。
 
-lark-remote 崩溃时 agent 子进程变孤儿。启动时读 `<configDir>/<agent>-*.pid`（按 workspace
+lark-remote 崩溃时 agent 子进程变孤儿。每次为某个 (workspace, agent) 槽位创建 runner 时
+（`Bridge.getRunner` → `runner.killOrphan()`）读 `<configDir>/<agent>-*.pid`（按 workspace
 隔离），先做进程身份校验（`ps -o command=` 匹配 binary，防 pid 复用误杀）
 再对整个进程组发 SIGTERM；lark-remote 退出时（`process.on('exit'|'SIGINT'|'SIGTERM')`）
 对进程组做 SIGTERM+SIGKILL 清理并删 pid 文件。
@@ -990,7 +998,7 @@ kimi = `turn.prompt`（整份 wire 都没有该标记的旧数据沿用"整份�
 同一 turn 内多条 synthetic 消息（如 shell 完成事件触发的 synthetic）不构成新 turn，
 中间没有 idle/turn.prompt 就并入同一轮。`contextLength` 始终取末条采样，不求和。
 
-**reader 责任矩阵与回归史**：七个 reader 的 turn 边界分别是 claude/pi = 末条真实
+**reader 责任矩阵与回归史**：各 reader（8 个注册，名单单源 `src/agent-kinds.ts`；qoder 复用 claude reader 内核，不单列）的 turn 边界分别是 claude/pi = 末条真实
 user 消息（已按末个 turn 汇总所有 assistant 消息）、opencode v1 = 末条 user、
 opencode v2 = 末个 `idle`（末条采样后出现新 user 时 flow = 0）、kimi =
 `turn.prompt`（空 turn 显示 0，不退回上一轮）、codex = `task_started`、dsh =
@@ -1035,7 +1043,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 ```
 
 - 必须先对**全集**按 mtime desc 建立全序再切片；任何建立全序前的提前终止都错。
-- 负 offset 按 0 处理（6 reader 统一 `Math.max(0, offset)`，防静默空页）。
+- 负 offset 按 0 处理（全部 reader 统一 `Math.max(0, offset)`，防静默空页）。
 - `getNewestSession(cwd)` 内部 = `listSessions(cwd, { limit: 1 }).sessions[0] ?? null`。
 - codex 的 `listCodexRollouts` 返回 `{ entries, total }`，基于 `getSessionIndex`
   （全量 walk + 首行 `session_meta` + stat mtime，5s TTL），只对页内文件全量解析。

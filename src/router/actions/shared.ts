@@ -159,6 +159,18 @@ export interface DefaultAgentSwitchOutcome {
 }
 
 /**
+ * 回执里的工作区行（`📁 <cwd>`，无 cwd 落 `(未设置)` 占位）。「下一条消息
+ * 从哪儿开新对话」类回执（/new 与 agent 切换的清空分支）共用此格式，避免
+ * 两处各写一份文案后漂移。
+ */
+export function workspaceLine(sessionStore: SessionStore, userId: string): string {
+  // 空串同样是「未设置」：SessionStore 为任何写过的用户建条目，cwd 缺省是 ''，
+  // 只判 undefined 会把 `📁 ` 发到用户面前。
+  const cwd = sessionStore.getCwd(userId);
+  return `📁 ${cwd || '(未设置)'}`;
+}
+
+/**
  * 「开新会话」的统一入口（/new 命令与 run 卡「✨ 新会话」按钮共用）：
  * 清当前 agent 的会话绑定（含 per-agent sessionCwd；主 cwd 保留——/new 后
  * /resume 仍能用原工作目录），返回带工作区的回执文案。
@@ -172,8 +184,7 @@ export function applyNewSession(
   userId: string,
 ): string {
   sessionStore.clearSessionId(userId, agentKind, { clearSessionCwd: true });
-  const cwd = sessionStore.getCwd(userId) ?? '(未设置)';
-  return `已创建新 ${agentDisplayName(agentKind)} 会话，下一条消息将开始全新对话\n📁 ${cwd}`;
+  return `已创建新 ${agentDisplayName(agentKind)} 会话，下一条消息将开始全新对话\n${workspaceLine(sessionStore, userId)}`;
 }
 
 /**
@@ -278,8 +289,11 @@ export function applyDefaultAgentSwitch(
   sessionStore.clearSessionId(userId, newAgent, { clearSessionCwd: true });
   sessionStore.setArrivalSessionId(userId, newAgent, '');
   const newAgentName = agentDisplayName(newAgent);
+  // 清空分支 = 「下一条消息在此工作区开新对话」，回执与 /new 同形（含 📁 工作区）。
+  // 恢复/显式选择分支不加：它们的 Resume 卡 header 已有 `📂 <cwd>` 行，再加
+  // 一行 📁 会让同一个目录在卡上出现两遍。
   return {
-    notice: `已切换到 ${newAgentName}，session 已清空，下次消息将启动新对话`,
+    notice: `已切换到 ${newAgentName}，session 已清空，下次消息将启动新对话\n${workspaceLine(sessionStore, userId)}`,
     newAgent,
     sessionId: '',
   };

@@ -78,17 +78,14 @@ export interface AgentSessionUsage {
 }
 
 /**
- * 一张 run 卡的用量快照：`AgentSessionUsage` 的可选形态 + 只有 live 侧有的
- * 推理计数。桥侧记账、reducer 写入 RunState、渲染层格式化都吃这一份——
- * 字段清单原先手抄在 6 个 interface 里（§9.21「五处一致」靠人记），
- * 新增一个 usage 字段要同步改 6 处，漏一处就是卡片少一行。
+ * 一张 run 卡的用量快照：`AgentSessionUsage` 的可选形态。桥侧记账、reducer
+ * 写入 RunState、渲染层格式化都吃这一份——字段清单原先手抄在 6 个 interface
+ * 里（§9.21「五处一致」靠人记），新增一个 usage 字段要同步改 6 处，漏一处
+ * 就是卡片少一行。
  *
  * 中立层：card / bridge / runner / router 都引用它，谁也不向上依赖。
  */
-export type UsageSnapshot = Partial<AgentSessionUsage> & {
-  /** 推理 token（pi usage.reasoning 累加）；reader 契约里没有，只有 live 事件带。 */
-  reasoningTokens?: number;
-};
+export type UsageSnapshot = Partial<AgentSessionUsage>;
 
 /** Unified session content payload returned by every AgentSessionReader. */
 export interface SessionContent {

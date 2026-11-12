@@ -323,8 +323,6 @@ export interface ResultEvent {
     /** 当前模型 context window 上限（codex app-server tokenUsage.modelContextWindow
      *  透传）。仅 app-server 提供；缺省时卡片只显示绝对量、不显示百分比。 */
     context_limit?: number;
-    /** 推理 token（pi 提供）。缺省不展示。 */
-    reasoning_tokens?: number;
   };
   errorMessage?: string; // For auth errors and other run failures
   /**

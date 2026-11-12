@@ -2,7 +2,7 @@
 
 # lark-remote Design Document
 
-Bridges Feishu private chat messages to local coding agent CLIs (Claude Code / Codex / opencode / pi / Kimi / DSH). When a user sends a message or `/command`, the program passes the message to the agent process, reads the event stream, and updates thinking / text / tool summaries in real time on a single Feishu card. All Feishu I/O is handled by the program; it does not modify the agent's system prompt and only supports p2p private chat, single user. This document uses Claude Code as the primary example; the other agents share the same skeleton, differing only in each runner's protocol adapter.
+Bridges Feishu private chat messages to local coding agent CLIs (Claude Code / Codex / opencode / pi / Kimi / DSH / CodeBuddy / Qoder). When a user sends a message or `/command`, the program passes the message to the agent process, reads the event stream, and updates thinking / text / tool summaries in real time on a single Feishu card. All Feishu I/O is handled by the program; it does not modify the agent's system prompt and only supports p2p private chat, single user. This document uses Claude Code as the primary example; the other agents share the same skeleton, differing only in each runner's protocol adapter.
 
 ---
 
@@ -18,47 +18,56 @@ Bridges Feishu private chat messages to local coding agent CLIs (Claude Code / C
 
 ## 2. Architecture
 
+New to the project? Read [how-it-works.md](how-it-works.md) first for a plain-language overview; this section targets contributors.
+
+```mermaid
+flowchart TD
+    feishu["Feishu Server"] -- "WebSocket long connection<br/>(@larksuite/channel SDK)" --> lock["InstanceLock<br/>one main process per configDir"]
+    lock --> connector["FeishuConnector<br/>receives p2p message + cardAction<br/>sends cards / updates cards / files"]
+    connector --> contact["StartupContact<br/>records most recent private chat; sends startup notification"]
+    contact --> bridge["Bridge<br/>normal messages via work queue (per-cwd lanes)<br/>stop via control lane; non-command messages → forwardToClaude"]
+    bridge -- "getRunner()" --> registry["AgentRegistry<br/>(agent runner registry)"]
+    bridge -- "completion notification card" --> readers["SessionReaderRegistry<br/>(per-agent session file readers)"]
+    bridge --> runner["ClaudeRunner and per-agent runners<br/>long-lived interactive sessions / ACP / app-server / HTTP+WS<br/>emit unified AgentEvent stream"]
+    bridge --> cardsession["RunCardSession<br/>RunState reduce → CardKit 2.0 render → patch original message"]
+    cardsession --> connector
 ```
-Feishu Server
-    │ WebSocket (@larksuite/channel SDK)
-    ▼
-InstanceLock             Only one lark-remote main process per configDir
-    │
-FeishuConnector          Receive p2p message + cardAction, send/update cards/files
-    │
-StartupContact           Record most recent private chat; send notification with startup time and pid after connection
-    │
-Bridge                   Normal work queue + stop control lane; non-command messages → forwardToClaude
-    │                       getRunner() via AgentRegistry, sendCompletionNotificationCard via SessionReaderRegistry
-CommandRouter            /-prefixed → built-in handler; otherwise delegate to bridge.forwardToClaude
-    │                       session reads via SessionReaderRegistry (not direct claude/sessions import)
-    │
-ClaudeRunner             spawn claude -p, parse JSONL, check process terminal state, yield AgentEvent
-    │
-RunCardSession           RunState reduce → CardKit 2.0 render → patch original message
-    │
-FeishuConnector.streamCard() / updateCard()
-```
+
+- `CommandRouter`: `/`-prefixed → built-in handler; otherwise delegate to `bridge.forwardToClaude`. Session reads always go through `SessionReaderRegistry`, never a direct import of one agent's sessions implementation.
+- `ClaudeRunner` (Claude as the example): long-lived interactive session (`ClaudeSession`), stream-json bidirectional channel, `control_request` → `ApprovalCoordinator` → approval area, yields `AgentEvent`. The other agents share the same skeleton, differing only in each runner's protocol adapter.
+- All Feishu I/O goes through `FeishuConnector`; card updates land on the same card via `RunCardSession`'s `streamCard()` / `updateCard()`.
 
 ---
 
-## 3. Claude Process Invocation
+## 3. Claude Process Invocation (Long-Lived Interactive Mode)
+
+`ClaudeRunner` uses a **long-lived interactive session**: one long-lived process per workspace; stdout is the stream-json event stream, stdin is a bidirectional JSON control channel (`--input-format stream-json`). Each user message = write one `user` event + consume events until this turn's `result`; the process stays alive between turns and is stopped on `/stop`, `/new`, `/cd`, session-level idle reclamation (`claude.idleTtlMinutes`, default 30 minutes), or lark-remote exit via `Terminator` (posix negative-PID group kill / win32 taskkill tree kill); the next message resumes with the SessionStore sessionId via `--resume`. Process orchestration (pid file, killOrphan identity check, heartbeat, exit dispatch) is reused by `ClaudeSession` inheriting `SpawningRunner`; `ClaudeRunner` is a thin workspace-lifetime wrapper.
 
 ```bash
 claude \
-  -p "<user_message>" \
   --output-format stream-json \
+  --input-format stream-json \
+  --permission-prompt-tool stdio \
+  --replay-user-messages \
   --verbose \
-  --permission-mode auto \
+  [--permission-mode <acceptEdits|auto|bypassPermissions|manual|dontAsk|plan>] \
   [--resume <session_id>] \
   [--model <model>] \
   [--settings <settings_json_path>]
 ```
 
 - `--verbose`: **Must be included**, otherwise JSONL will not contain `thinking` blocks
+- `--permission-prompt-tool stdio`: sends permission checks to stdout as `control_request` (subtype `can_use_tool`) and receives `control_response` on stdin — a field-proven path (a hidden Claude Code SDK parameter not shown by `claude --help`; `stdio` is a reserved value, any other value is treated as an MCP tool name to call)
+- `--replay-user-messages`: echoes user messages back to stdout (`isReplay`), so the protocol layer can confirm the message was received
+- `--permission-mode`: default `auto` (low-risk actions run, high-risk actions ask for approval); `bypassPermissions` can still be chosen explicitly (no approval card). The config value `default` is **not** a CLI value (not among `claude --help` choices); it means "omit the flag" and let the CLI decide the default mode; the conversion happens in `runner/claude/session.ts` when assembling arguments
 - `--settings`: Optional, specifies the Claude configuration file (passed via CLI argument `--settings`, or auto-detected from `CLAUDE_SETTINGS_PATH` environment variable / `~/.claude/settings.json`)
 - `cwd`: Passed via spawn's `cwd` option, not written into the prompt
-- `stdin`: Must be set to `'ignore'`, otherwise the process may hang waiting for input
+
+**Interactive approval flow**: `control_request` (tool call / AskUserQuestion) → the runner translates it to `approval_requested` → lark-remote `ApprovalCoordinator` → approval area at the bottom of the run card (Allow / Deny / Allow all; AskUserQuestion renders as an option card) → user decision → `control_response` written back. The bridge-level idle watchdog is paused while an approval is pending; `claude.approvalTimeoutMs` (default 5 minutes) auto-sends cancel (deny + interrupt the turn) on timeout, with the terminal state showing "approval timed out, auto-cancelled".
+
+**ExitPlanMode plan approval**: the full plan text plus plan file path are shown on the approval card (sources in fallback order: input.plan → input.planFilePath file read → plans paths tracked by in-session Write/Edit). Decisions align with the TUI interactions: approve and run (allow) / approve and auto-approve (allow + session-level autoApprove) / deny with feedback (deny + message, stays in plan mode) / approve with edits (allow + `updatedInput.plan`, triggering Claude-side `planWasEdited`) / deny. Feedback typed into the `approval.planFeedback` input flows back to the coordinator; feedback-type buttons are reused.
+
+**result event semantics**: subtype `compact`/`compaction` is a mid-turn compaction (not an end); other subtypes are turn-terminal states. `--resume` first replays the previous turn's old result (earlier than `system/init`), which the protocol layer drops. Verified against real claude: in long-lived mode no stdout events follow the result (background task completion is silent), so result = the run card's terminal state — no need to wait for process exit like the old `-p` flow.
 
 **JSONL event types (one JSON per line):**
 
@@ -105,23 +114,28 @@ const sessions = new Map<string, SessionEntry>();
 
 ## 5. Command List
 
-| Command                   | Behavior                                                                                                                                                                     |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/new`                    | Clear session (keep cwd)                                                                                                                                                     |
-| `/cd <path>`              | Switch cwd, clear session                                                                                                                                                    |
-| `/ls [dir]`               | Pop up directory/file card; click directory to switch, click file under 30MB to send to Feishu; >30 items paginated                                                          |
-| `/ws save/use/remove`     | Named directory alias management (`/ws` defaults to list)                                                                                                                    |
-| `/resume [list\|id]`      | List/switch current agent's sessions (`/resume [agent] [N]` two-argument form, N clamped to [1,5] as page size); list paginated (`resume.page` callback for page navigation) |
-| `/active`                 | List in-progress tasks (Agent + Bash) in this process's memory                                                                                                               |
-| `/status`                 | Show cwd, session_id, model, process status                                                                                                                                  |
-| `/stop`                   | SIGTERM then immediately SIGKILL (no grace wait)                                                                                                                             |
-| `/ps`                     | Whether a process is running                                                                                                                                                 |
-| `/help`                   | Command list                                                                                                                                                                 |
-| `/exit`                   | Exit lark-remote                                                                                                                                                             |
-| `/restart`                | In-place self-restart lark-remote: spawn detached successor → old process releases instance lock and exits                                                                   |
-| `/config get\|set`        | Query/modify runtime config (card interaction, agent-aware fields)                                                                                                           |
-| `/order save\|list\|edit` | Save, list, or edit frequent prompts                                                                                                                                         |
-| `!<cmd>`                  | Execute bash command with streaming output to card (bypasses serial queue)                                                                                                   |
+Full command usage (parameter details and examples) see `docs/en/usage.md` §5; list only:
+
+| Command                          | Behavior                                                                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/new`                           | Clear session (keep cwd)                                                                                                                                                     |
+| `/cd <path>`                     | Switch cwd, clear session                                                                                                                                                    |
+| `/ls [dir\|file]`                | Pop up directory/file card; click directory to switch, click file under 30MB to send to Feishu; >30 items paginated                                                          |
+| `/download <path>` `/d`          | Send the given file straight to Feishu (30MB cap)                                                                                                                            |
+| `/ws save/use/remove`            | Named directory alias management (`/ws` defaults to list)                                                                                                                    |
+| `/resume [list\|id]`             | List/switch current agent's sessions (`/resume [agent] [N]` two-argument form, N clamped to [1,5] as page size); list paginated (`resume.page` callback for page navigation) |
+| `/active`                        | List in-progress tasks (Agent + Bash) in this process's memory                                                                                                               |
+| `/status`                        | Show cwd, session_id, model, process status                                                                                                                                  |
+| `/stop`                          | SIGTERM then immediately SIGKILL (no grace wait)                                                                                                                             |
+| `/ps`                            | Whether a process is running                                                                                                                                                 |
+| `/help`                          | Command list                                                                                                                                                                 |
+| `/exit`                          | Exit lark-remote (alias `/quit`)                                                                                                                                             |
+| `/restart`                       | In-place self-restart lark-remote: spawn detached successor → old process releases instance lock and exits                                                                   |
+| `/update` `/u`                   | Check npm for the latest version and self-update (`/update check` only checks)                                                                                               |
+| `/clone [name]`                  | Clone the config into a new directory and create a new Feishu app by QR scan; binds and launches the new instance on success                                                 |
+| `/config get\|set`               | Query/modify runtime config (card interaction, agent-aware fields)                                                                                                           |
+| `/order save\|list\|edit\|alias` | Save, list, or edit frequent prompts (aliases and usage stats preserved; `$name` expansion)                                                                                  |
+| `!<cmd>`                         | Execute bash command with streaming output to card (bypasses serial queue)                                                                                                   |
 
 ---
 
@@ -192,16 +206,17 @@ This project uses CardKit 2.0 exclusively (no 1.x code paths remain). 2.0 card c
 
 ### 6.4 `/ws` Card
 
-Uses CardKit 2.0, two buttons per alias:
+Uses CardKit 2.0, two buttons per alias; the list paginates by `WS_PAGE_SIZE` (15 entries per page), and when there is more than one page a pagination bar is shown at the bottom (`ws.page` refreshes in place). 15 rows + header + pagination bar count 80 elements, below Feishu's measured limit of 99 (criteria and measurements in `docs/zh/cardkit-layout.md` "card element total limit"; exceeding it reports `230099/11310`). Remove buttons carry an `offset` so the list stays on the current page after refresh.
 
 ```json
 { "cmd": "ws.use",    "name": "proj-a" }
-{ "cmd": "ws.remove", "name": "proj-a" }
+{ "cmd": "ws.remove", "name": "proj-a", "offset": 0 }
+{ "cmd": "ws.page",   "offset": 15 }
 ```
 
 ### 6.5 Claude Run Card
 
-Each Claude run creates only one CardKit 2.0 card on the normal path. `channel.stream` sends the initial card first, then patches the entire card via `message_id`. During the run, thinking, main text, tool summaries, status line, and stop button are displayed; on terminal state, the header changes and the buttons are removed, while **the status line stays**: the elapsed time freezes and DSH's step/context projections show the final snapshot from that run (user request, 2026-10-21).
+Each Claude run creates only one CardKit 2.0 card on the normal path. `channel.stream` sends the initial card first, then patches the entire card via `message_id`. During the run, thinking, main text, tool summaries, status line, and stop button are displayed; on terminal state, the header changes and the buttons are removed, while **the status line stays**: the elapsed time freezes and DSH's step/context projections show the final snapshot from that run. The status line is a **single-row single `div`** (`⏱ 12s · 🧰 532 steps · 📊 ~36%`, `notation` font size): on narrow phone screens a `column_set`'s auto column squeezes "running" into vertical stacking — the column width is decided by the peer and the server cannot control it, so the status line never uses column layouts; see `docs/zh/cardkit-layout.md`'s "narrow-screen first" section.
 
 The stop button payload is `{ "cmd": "stop", "runId": "<uuid>" }`. The entry point must validate `operator.openId + chatId` and bypass the normal work queue, otherwise the stop would be queued behind the current run and unable to interrupt it. Bridge matches the runId first. If that value is missing or stale, it accepts the card callback's `messageId` only when that message identifies the current active run card. Historical cards and other cards such as `/active` cannot use this fallback to stop a newer run.
 
@@ -232,19 +247,49 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# Default agent: claude | codex | opencode | pi | kimi | dsh
-# Determines which agent lark-remote spawns and which agent name the run card header displays
+# Default agent display order (/config card; single source: DEFAULT_AGENT_ORDER in
+# src/router/config/index.ts): codex → claude → opencode → pi → kimi → dsh → codebuddy → qoder;
+# agents known to be uninstalled (CLI not on PATH) sort last. defaultAgent decides which
+# agent lark-remote spawns and which agent name the run card header displays
 defaultAgent: claude
 
 claude:
   model: claude-opus-4-8
   effort: medium # low | medium | high | xhigh | max
   permissionMode: auto # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
+  approvalTimeoutMs: 300000 # approval timeout (ms), default 5 minutes
+  idleTtlMinutes: 30 # session-level idle reclamation (minutes), 0 = disabled
   stopGraceMs: 5000
 
-codex:
-  approvalPolicy: on-request # Codex official AskForApproval: untrusted | on-request | never (default on-request)
-  sandbox: workspace-write # Codex official SandboxMode: read-only | workspace-write | danger-full-access (default workspace-write)
+agents:
+  codex:
+    approvalPolicy: on-request # Codex official AskForApproval: untrusted | on-request | never (default on-request)
+    sandbox: workspace-write # Codex official SandboxMode: read-only | workspace-write | danger-full-access (default workspace-write)
+    appServer: # app-server connection parameters
+      binary: codex
+      requestTimeoutMs: 60000
+      idleTtlMs: 1800000
+      turnIdleTimeoutMinutes: 10
+  kimi:
+    permissionMode: manual # manual | auto | yolo (pure ACP mode: persistent kimi acp connection, approval + compact supported)
+    acp: # acp connection parameters
+      binary: kimi
+      requestTimeoutMs: 60000
+      idleTtlMs: 1800000
+      turnIdleTimeoutMinutes: 10
+  dsh: # DSH (DeepSeek Harness) Web Host direct connection (HTTP+WS, machine-wide shared process)
+    host: http://127.0.0.1:3080 # local DSH Web Host address
+    manageProcess: true # started detached by lark-remote when not running
+    dshHome: '' # optional: DSH_HOME
+    dshCommand: dsh # optional: dsh executable
+    startTimeoutMs: 30000 # port + session service readiness wait cap
+    token: '' # YAML-only fallback: token in the dsh web launch URL; not shown on the /config card
+    credentialsFile: '' # optional: DSH credentials file, default $DSH_HOME/.credentials.yaml
+    agentPreset: '' # empty = follow the server default; fixed once the session is created
+    permissionPreset: '' # permission preset (sandbox + approval policy); empty = no intervention
+    provider: '' # DSH provider route; empty = legacy-compatible deepseek-official
+    model: '' # empty = the provider's default model
+    reasoningEffort: '' # empty = the model's default tier
 
 logging:
   level: info # debug | info | warn | error
@@ -257,7 +302,7 @@ When `feishu.appId`/`appSecret` is not detected on first launch: interactive ter
 
 QR rendering lives in `src/config/qr.ts`: one module matrix, two renderers — full blocks (two `█` per module, Windows-safe) and half blocks (two QR rows per text row, compact). Windows only gets full blocks (half blocks' `▀`/`▄` usually render wrong in Windows console fonts, which is why the printed symbol cannot be scanned); POSIX falls back to half blocks when full blocks do not fit. Both renderers emit the 4-module quiet zone the QR spec requires (the previous `qrcode-terminal` half-block output had none). When the terminal cannot fit a whole symbol — or always on Windows — the wizard writes the symbol to `<configDir>/qr-code.gif` and prints the path, and removes it when the scan finishes or the process exits.
 
-The full semantics of the `codex.appServer` and approval/sandbox fields live in [`docs/en/guides/codex-config.md`](../guides/codex-config.md); `kimi`'s permissionMode/acp fields in [`docs/en/usage.md`](../usage.md) (kimi is pure ACP now, the cli/acp switch is gone); and `dsh`'s `host`/`token`/`credentialsFile`/`agentPreset`/`permissionPreset`/`provider`/`model`/`reasoningEffort` fields — including the `manageProcess`/`dshHome`/`dshCommand`/`startTimeoutMs` process keys this section assumes — in [`docs/en/usage.md`](../usage.md).
+The full semantics of the `codex.appServer` and approval/sandbox fields live in [`docs/en/guides/codex-config.md`](../guides/codex-config.md); `kimi`'s permissionMode/acp fields in [`docs/en/usage.md`](../usage.md) (kimi is pure ACP now, the cli/acp switch is gone); and `dsh`'s `host`/`token`/`credentialsFile`/`agentPreset`/`permissionPreset`/`provider`/`model`/`reasoningEffort` fields — including the `manageProcess`/`dshHome`/`dshCommand`/`startTimeoutMs` process keys this section assumes — in [`docs/en/usage.md`](../usage.md). The `agents.*` fields for CodeBuddy / Qoder / opencode / pi are not repeated here; the full YAML lives in [`docs/en/usage.md`](../usage.md) §3, and the agent roster's single source is `AGENT_KINDS` in `src/agent-kinds.ts`.
 
 DSH's launch token is generated randomly per process and dies with the restart, while its browser signing secret is persisted in the `client-connection/browser-session` record of `$DSH_HOME/.credentials.yaml`. lark-remote reads that file on every request by default and mints a short-lived v1 cookie from it. DSH's `/api` admission accepts the v1 cookie (it is a shared browser peer), so after an external `dsh web` restart a request that failed still recovers on the next attempt using the same signing secret; `token` is only a fallback for when the credentials file cannot be read. DSH's convention requires the file to be mode `0600`, lark-remote only reads it, and neither the secret nor the minted cookie is ever logged.
 
@@ -287,7 +332,7 @@ DSH's stop is not "kill a local child process": the turn runs inside the shared 
 
 ### 9.3 Claude First Run Requires OAuth
 
-`claude -p` triggers interactive browser OAuth when not logged in; with `stdin=ignore`, the process hangs or exits with an error. lark-remote cannot perform this step on behalf of the user — if OAuth is incomplete on first launch, it will be logged and the user must run `claude` in the terminal manually to complete login.
+`claude` (print/interactive mode) triggers interactive browser OAuth when not logged in; without a TTY the process hangs or exits with an error. lark-remote cannot perform this step on behalf of the user — if OAuth is incomplete on first launch, it will be logged and the user must run `claude` in the terminal manually to complete login.
 
 ### 9.4 JSONL Last Line May Lack Newline
 
@@ -312,12 +357,14 @@ enqueue(task: () => Promise<void>): void {
 
 `/stop` and stop cardAction are control operations that must bypass this Promise chain and call `Bridge.interruptCurrentRun()` directly. The active run stores runId/userId/chatId to prevent stale cards or other sessions from terminating the current run.
 
+When there is no local activeRun (a restored session, a previous bridge instance, or a turn started by the DSH Web UI), `/stop` and the resume card's "Stop" button instead go by sessionId through `HostTurnStop`: they take only the session pointed at by the current cwd/session or the card, call `DshRunner.cancelHostTurn()` (`session/cancel` + `openTurnState` idle check), and never scan activeRuns. After a goal turn is cancelled, the DSH goal-round-driver sets the goal to `paused` (non-goal turns get disarmed), so stop is not immediately resumed by the next round.
+
 **Lanes share the same source as execution cwd**: Lane keys are partitioned by the `sessionStore` cwd at enqueue time, while slash commands like `/cd`, `/ws use`, `ls.switch` bypass the queue and immediately modify cwd. If `forwardToClaude` re-resolves cwd at execution time, a race condition occurs where two parallel lanes both resolve to the new cwd — the first occupies `activeRuns`, the second gets busy-dropped, and the queued message is silently lost. Fix: the `index.ts` enqueue closure passes the `workspace` at enqueue time as `cwdOverride` explicitly to `router.handle` → `bridge.forwardToClaude`; at execution time, the lane takes precedence (empty string falls back to `resolveCwd`). `finalizeRun` cleanup (`activeRuns.delete` + runner slot reclaim) executes in the `try/finally`'s finally block (review): even if `renderRunCard` throws during finalization, it must not leave a permanently busy workspace.
 
-**Batch 6 P1 semantics**:
+**Three hardenings landed in the same batch**:
 
 - Completion notification card: `sendCompletionNotificationCard` reads session content with `maxEvents: 5`, sends via `sendResult` (with `enforceCardBudget` as fallback), no longer directly calls the connector — long session cards will no longer exceed 28KB and be silently rejected by Feishu.
-- Bash `!` process: `BashProcessRunner` registers to the process-level exit dispatcher during the process's lifetime (same source as the 5 agent runners); on `/restart`/SIGTERM, it group-kills bash and its child processes; on `run()` completion it unregisters — `!sleep 3600` will no longer become orphaned.
+- Bash `!` process: `BashProcessRunner` registers to the process-level exit dispatcher during the process's lifetime (same source as the agent runners); on `/restart`/SIGTERM, it group-kills bash and its child processes; on `run()` completion it unregisters — `!sleep 3600` will no longer become orphaned.
 - Caching: session read caching uniformly uses "TTL based on cache write time + bounded LRU/FIFO".
 
 ### 9.7 `/ls` Switch Target: Aligned with Browse, No Subtree Restriction
@@ -373,7 +420,7 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 Only one lark-remote main process can run simultaneously per `configDir`. On startup, `InstanceLock` reads `<configDir>/lark-remote.pid`: if the pid is still alive, it refuses to start; if the pid no longer exists, it overwrites the stale lock; on process exit, only the lock belonging to the current pid is cleaned up.
 
-When lark-remote crashes, agent child processes become orphans. On startup, read `<configDir>/<agent>-*.pid` (isolated by workspace), first verify process identity (`ps -o command=` matching binary to prevent pid-reuse mistaken kills), then send SIGTERM to the entire process group; on lark-remote exit (`process.on('exit'|'SIGINT'|'SIGTERM')`), send SIGTERM+SIGKILL cleanup to the process group and delete pid files.
+When lark-remote crashes, agent child processes become orphans. Every time a runner slot is created for a (workspace, agent) pair (`Bridge.getRunner` → `runner.killOrphan()`), lark-remote reads `<configDir>/<agent>-*.pid` (isolated by workspace), first verifies process identity (`ps -o command=` matching binary to prevent pid-reuse mistaken kills), then sends SIGTERM to the entire process group; on lark-remote exit (`process.on('exit'|'SIGINT'|'SIGTERM')`), it sends SIGTERM+SIGKILL cleanup to the process group and deletes pid files.
 
 ### 9.10 workspace.json Write Atomicity
 
@@ -395,7 +442,7 @@ Two **intentional** terminal-UX exemptions: the already-running notice in `src/i
 
 ### 9.13 `/active` and `/resume` Session State Determination
 
-**New semantics**: `/active` no longer scans the filesystem; it only shows active tasks in this lark-remote process's memory. Agent tasks are obtained via `Bridge.getActiveRuns()`, and Bash commands via `Bridge.getActiveBashRuns()`. Only tasks with `terminal` as `running` or `finalizing` are shown; completed tasks (done/error/interrupted) are not displayed. `/resume` and `/cd` / `/ws use` auto-resume cards use `readSessionContent` to read session content after the last user input. Background task state preferentially merges the in-memory `Bridge.getActiveRunFor(cwd)` active run from the current lark-remote process; memory state is only reused when `activeRun.sessionId === sessionId` and terminal is `finalizing`. JSONL serves as fallback: after `result` there is no `permission-mode`, or `system.away_summary` appears at the tail — both display as "finalizing" — but must be combined with mtime freshness check (`STALE_MS = 1h`, same source as `isSessionActive`): a file that hasn't been written to for over 1 hour cannot be from a still-running process. (Any completed normal turn ends with `result` and has no `permission-mode`; mtime gating is used to exclude such stale files.) The card's `stop` button, when `interruptCurrentRun` misses (runId mismatch or already exited), replies via `bridge.sendResult` with "task has ended, no need to stop", rather than silently returning.
+`/active` does not scan the filesystem; it only shows active tasks in this lark-remote process's memory. Agent tasks are obtained via `Bridge.getActiveRuns()`, and Bash commands via `Bridge.getActiveBashRuns()`. Only tasks with `terminal` as `running` or `finalizing` are shown; completed tasks (done/error/interrupted) are not displayed. `/resume` and `/cd` / `/ws use` auto-resume cards use `readSessionContent` to read session content after the last user input. Background task state preferentially merges the in-memory `Bridge.getActiveRunFor(cwd)` active run from the current lark-remote process; memory state is only reused when `activeRun.sessionId === sessionId` and terminal is `finalizing`. JSONL serves as fallback: after `result` there is no `permission-mode`, or `system.away_summary` appears at the tail — both display as "finalizing" — but must be combined with mtime freshness check (`STALE_MS = 1h`, same source as `isSessionActive`): a file that hasn't been written to for over 1 hour cannot be from a still-running process. (Any completed normal turn ends with `result` and has no `permission-mode`; mtime gating is used to exclude such stale files.) The card's `stop` button, when `interruptCurrentRun` misses (runId mismatch or already exited), replies via `bridge.sendResult` with "task has ended, no need to stop", rather than silently returning.
 
 If jsonl contains no user messages at all (very old/corrupted), fallback to reading the entire file instead of returning an empty card, to avoid `/resume use` getting a sessionId and then only showing a plain text "session_id has been set" without a history card.
 
@@ -432,16 +479,11 @@ Test coverage: `src/bridge/bridge.test.ts` `Bridge.forwardToClaude logging probe
 
 ### 9.16 `/active` In-Memory Implementation
 
-> **New semantics**: The following content supersedes the old jsonl scanning approach. `/active` now only shows active tasks in this lark-remote process's memory.
-
-**New implementation**: `/active` no longer scans all subdirectories of `~/.claude/projects/`.
+`/active` does not scan `~/.claude/projects/`; all data comes from memory:
 
 - Data source: `Bridge.getActiveRuns()` (Agent tasks) + `Bridge.getActiveBashRuns()` (Bash commands)
 - Determination logic: only includes tasks with `terminal` as `running` or `finalizing`
-- Advantages:
-  1. High certainty: not affected by filesystem state
-  2. Clear semantics: users only see "what's running now"
-  3. Consistent with `/stop`: both based on in-memory runId
+- Benefits: unaffected by filesystem state; the user sees only "what is running now"; consistent with `/stop`, both based on in-memory runId.
 
 **`Bridge.enqueue` defensive check**: Production logs repeatedly showed `[lark-remote] queue task error: TypeError: task is not a function`; root cause was non-function tasks slipping into the Promise chain and polluting the entire workspace queue. `enqueue` entry adds a `typeof task === 'function'` guard; non-functions get a warning + early return, not breaking subsequent task progression.
 
@@ -457,13 +499,15 @@ Secondary information for all card types is wrapped in CardKit `collapsible_pane
 | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Thinking                      | Running: `expanded:true`; completed: `expanded:false`                                                    | Focus on progress during run; secondary info after completion                                                      |
 | Tool (any state)              | **Native collapsible panel** (same interaction as thinking; tap the title); body truncated by tool count | Consistent with existing interaction, no round trip; size is controlled by truncation, not by withholding the body |
-| Failed tool                   | Body expanded by default; the button becomes "Collapse"                                                  | An error must be visible, not hidden behind a click                                                                |
+| Running / failed tool         | Expanded by default                                                                                      | The user is waiting for the result; an error must be visible immediately                                           |
 | Main text block               | Not folded, direct markdown                                                                              | Claude's reply is the primary information                                                                          |
 | Terminal footer / Stop button | Not folded                                                                                               | Status summary must be visible                                                                                     |
 
 **Tools are native collapsible panels** (settled 2026-10-19; an intermediate version used "one row + a server-side Details button"): tap the title to expand, no round trip and no button. The intermediate version was rejected because folding saves no bytes (see above), so the body could only be withheld and expanding required the server to re-send the card; on a phone that is one extra tap, and the button ate the title width (long URLs wrapped onto two lines — user screenshot). The body is now **always in the payload**, with its size controlled by `toolOutputBudget()`, which scales truncation by tool count (about 8 KB total, 160–1200 chars per tool). With `MAX_BLOCKS=24`, 24 tools plus 12 thinking panels measured 54 elements / 21.7 KB — inside both budgets. Client-side expand state still resets on the next patch (`expanded` is the send-time default); tool panels share that limitation with thinking panels.
 
 **Tool rendering improvements** (`src/card/tool-render.ts`): Collapsed header displays a smart summary (e.g., `✅ **Bash** — pwd`, `✅ **Read** — /repo/a.ts`) with a local timestamp appended; not the meaningless `Tool0`. `toolHeaderText` extracts key fields by tool type; `toolBodyMd` renders structurally by type (Bash→command/output code blocks, Read→file_path, Grep→pattern/path). Besides Claude/Codex tool names it also recognizes DSH's snake_case names and arguments (`glob`→pattern, `web_search`→queries[], `read_image`/`write`/`edit`→file_path, `todo_write`→completion progress, `subagent`/`job_*`/`present`/`skill`, …); without them the summary degrades to an empty string. Truncation constants: `HEADER_SUMMARY_MAX=80` (single field), `HEADER_DISPLAY_MAX=42` (**whole-title display width**, CJK/emoji counted as 2 — a panel title must stay on one line, otherwise a phone breaks it mid-URL), `BODY_FIELD_MAX=600`, `OUTPUT_MAX=1200`, `BODY_TOTAL_MAX=2500`.
+
+**Tool identity backfill**: opencode's ACP sends `tool_call` first during the argument-streaming phase (the part is created with `input:{}`, and the title falls back to the tool name `bash`); the command/path then arrive via `tool_call_update` (running carries rawInput+title, completed only title). The translator turns that into a `tool_use` patch with the same id, and the reducer merges input/summary in place by id (a first sighting of the id still adds a new block) — otherwise the collapsed panel would show only `Bash` with no command. The header dedups repeated summaries (the same command no longer renders as `ls — ls`). kimi's Bash is produced by `terminal/create` and does not go through this path; its `tool_call_update` content is streaming args text (opencode's is a shell-output snapshot, so opencode overrides `extractToolCallArgsText` to return undefined, avoiding tracking the output as if it were args).
 
 **Session content card folding** (auto-resume, `/resume <id>`): Each event is wrapped in `collapsible_panel`, with the last 2 expanded by default (user just resumed and needs to see the latest content), historical events collapsed.
 
@@ -515,7 +559,9 @@ Classification definitions:
 
 Current implementation: the `isImmediateAction` allowlist (`src/router/index.ts`) follows this classification — control operations run queue-free, work operations (`order.exec`, normal messages) go through the serial queue.
 
-**Addition (2026-08-21)**: handlers that return `{toast}`/`{card}` (`CardActionResponse`) must also be in the **direct-return allowlist** in `src/index.ts` — `enqueueImmediate`/`enqueueConfigAction` are fire-and-forget and swallow the return value. This has been missed three times (answer family / order.textInput / approval.planFeedback); new handlers of this kind must be added to the direct-return branch and the wiring guard test extended. Approval responses (`approval.*`) in particular must not enter the serial queue (a run occupying the queue head would deadlock).
+**Direct-return allowlist**: when a handler returns `{toast}`/`{card}` (`CardActionResponse`), it must also be in the **direct-return allowlist** in `src/index.ts` — `enqueueImmediate`/`enqueueConfigAction` are fire-and-forget and swallow the return value. This has been missed three times (answer family / order.textInput / approval.planFeedback); new handlers of this kind must be added to the direct-return branch and the wiring guard test extended. Approval responses (`approval.*`) in particular must not enter the serial queue (a run occupying the queue head would deadlock).
+
+**Callback responses must carry the `card` field explicitly**: being in the direct-return allowlist is only a necessary condition — the response must **carry a `card` field explicitly** for Feishu to replace the pre-click card. Returning only a toast plus a separate `updateCardInPlace` call gets overwritten by Feishu's "keep pre-click state" (the toast lands but the card stays stuck on the editing view / unrefreshed). Follow the queued-edit card `handleQueueInput`'s `return { toast, card: { type:'raw', data } }` pattern; order.aliasInput/aliasRemove hit this pit before.
 
 ### 9.20 SDK Throttle Patch Rejection Detach and unhandledRejection Fallback
 
@@ -542,6 +588,7 @@ Run card done statistics and `/resume` tail statistics share `formatUsageStats` 
 - **DSH aggregates by turn too**: `assistant/message.usage` is one per model call (step), so a tool-looping turn logs several. The live result accumulates only the durable `assistant/message.usage`; the same step's live `usage` chunk only refreshes the watermark and covers the no-event fallback (summing both would double count). The jsonl reader sums the last turn bounded by `turn/start`–`turn/end` (legacy data without turn markers falls back to the last record). Taking the last record alone understates a multi-step run (measured: done card Input 231 / Output 689 reflected only the final sampling).
 - **Cache percentage**: `cacheRead/(input+cacheRead)` (input is already the uncached value, no need to subtract again).
 - **Cache create row**: `cacheCreationTokens` (pi's `cacheWrite`, opencode's `tokens.cache.write`); codex is always 0.
+- **Context line and limit percentage**: `contextLimit` is provided by codex only (`token_count.info.model_context_window`, reported per turn, readable in the same event as `last_token_usage`). With `contextLimit` present the Context line renders `Context - X (Y%)`, `Y = round(contextLength/contextLimit*100)`, not clamped; without it (other agents, legacy data, running state) only the absolute value shows. `contextLimit <= 0` counts as missing (division-by-zero guard). In app-server mode the same value arrives via the protocol's `thread/tokenUsage/updated` `tokenUsage.modelContextWindow` (v2 schema, sibling of last/total), passed through the result event's `context_limit`, with the live value as fallback when jsonl lacks the field.
 - **Compact card "pre-compact" watermark**: codex writes the summarization call's own token_count before the `compacted` event (real order: last turn → summarization call → compacted → post-compact watermark), so "pre-compact" must take the last non-zero token_count **before the summarization call**. The reader uses `compacted.payload.latest_token_usage_record.usage` to recognize that call and step back one record; older data without the field falls back to the nearest non-zero token_count (original semantics). Skipping this shows the summarization call's consumption (measured in the hundreds of thousands) as the pre-compact window.
 
 **Passthrough chain and scope unification**: result event usage → `Bridge` extracts live values (claude native naming `cache_read_input_tokens`/`cache_creation_input_tokens` is compatible with unified naming); after process exit, `resolveFinalUsage` reads jsonl. **Flow fields (input/output/cache/total): when live has input/output, use live entirely (this-run scope); otherwise jsonl fallback.** The codex app-server `turn.completed` carries the protocol's `tokenUsage.last` summed over the turn (one line per sampling, aggregated on ingestion, live scope), so it follows the same live-first rule as opencode; `contextLength`/`compactCount` always prefer jsonl (watermark/history count). A single card must not mix scopes (previously Input was this-run while Cache/Total were session cumulative, with cache% numerator and denominator from different sources).
@@ -549,9 +596,9 @@ Run card done statistics and `/resume` tail statistics share `formatUsageStats` 
 
 **The jsonl fallback's flow fields must also be "the sum of the last turn's samplings"**: ACP's `usage_update` carries only context occupancy (`used`/`size`) and cost — no input/output split — so opencode and kimi always take the jsonl fallback. A reader that keeps only the last sampling reports a multi-request run as one request (measured: a 25-request run showed Input 543 / Output 1,250 while the real consumption was 20,040 / 10,358; the delta between two consecutive cards' cumulative lines matched the real numbers). Turn boundaries: opencode v2 = the `idle` message (opencode's own turn-end marker; take the last idle that still has samplings after it, so a file ending on an idle resolves to the previous idle and yields the last complete turn); opencode v1 = the last user message (v1 has no idle); kimi = `turn.prompt` (legacy wires without that marker keep the "whole file = one turn" semantics). Synthetic messages inside a run (e.g. a shell-completion synthetic) do not start a new turn — with no idle/turn.prompt in between they belong to the same turn. `contextLength` always uses the last sampling and is never summed.
 
-**Reader responsibility matrix and regression history**: the six readers use these turn boundaries — claude/pi = the last real user message (all assistant messages of the last turn are now summed), opencode v1 = the last user message, opencode v2 = the last `idle` (flow = 0 when a new user message appears after the last sample), kimi = `turn.prompt` (an empty turn shows 0, with no fallback to the previous turn), codex = `task_started`, dsh = `turn/start`–`turn/end`. `usageAuthority` is now split: `getUsageAuthority()` only expresses the flow source (ACP returns `'jsonl'`), while `usesLiveResultEvents()` expresses result-event semantics (pre-init dropping / session writeback). See [token-usage-scope.md](token-usage-scope.md) for the full contract, the 2026-07 → 2026-11 recurrence chain, and the remaining gaps.
+**Reader responsibility matrix and regression history**: the readers use these turn boundaries (8 registered; roster single-sourced from `AGENT_KINDS` in `src/agent-kinds.ts`; qoder reuses the claude reader kernel and is not listed separately) — claude/pi = the last real user message (all assistant messages of the last turn are now summed), opencode v1 = the last user message, opencode v2 = the last `idle` (flow = 0 when a new user message appears after the last sample), kimi = `turn.prompt` (an empty turn shows 0, with no fallback to the previous turn), codex = `task_started`, dsh = `turn/start`–`turn/end`, codebuddy = the per-request log's `conversation_request_id` (its jsonl records only the last request per turn; the reader sums CodeBuddy's per-request logs and falls back to jsonl when they are unavailable). `usageAuthority` is now split: `getUsageAuthority()` only expresses the flow source (ACP returns `'jsonl'`), while `usesLiveResultEvents()` expresses result-event semantics (pre-init dropping / session writeback). See [token-usage-scope.md](token-usage-scope.md) for the full contract, the 2026-07 → 2026-11 recurrence chain, and the remaining gaps.
 
-**`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), kimi sums the last turn bounded by `turn.prompt`, opencode reader (`cache.write`/`total`; v2 segments by `idle`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff; flow fields sum every sampling of the last turn, bounded by `task_started`). When changing the token **display semantics**, the five readers + `formatUsageStats` + lark-remote still have to be reviewed together; the **field list** is now single-sourced as `UsageSnapshot` (`src/session-contract.ts`) — the five hand-copied optional-field lists were replaced by `extends` on it, so adding a field means editing that one place.
+**`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), kimi sums the last turn bounded by `turn.prompt`, opencode reader (`cache.write`/`total`; v2 segments by `idle`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff; flow fields sum every sampling of the last turn, bounded by `task_started`), codebuddy's per-request logs (its jsonl records only the last request per turn — see §9.21 and token-usage-scope.md). When changing the token **display semantics**, every reader + `formatUsageStats` + lark-remote still have to be reviewed together; the **field list** is now single-sourced as `UsageSnapshot` (`src/session-contract.ts`) — the five hand-copied optional-field lists were replaced by `extends` on it, so adding a field means editing that one place.
 
 **contextLength**: claude/pi reader uses `max(last compact's postTokens, last turn's complete prompt input+output+cacheRead+cacheCreation)` — postTokens becomes stale as session grows (measured 85-95% underestimation); pi no longer uses pre-compaction `tokensBefore`; codex reader uses last turn's raw `input_tokens` (full prompt size including cache); lark-remote live path fallback `totalTokens ?? (input+cacheRead+cacheCreation+output)` (input is already uncached, cannot use just `input+output`).
 
@@ -559,7 +606,7 @@ Run card done statistics and `/resume` tail statistics share `formatUsageStats` 
 
 **Origin**: codex `/resume` list previously displayed an arbitrary walk subset (`listCodexRollouts` collected `limit*2` entries then broke and sorted; under APFS hash ordering, the newest directories were often skipped), and the total count displayed the truncated length.
 
-**Reader contract** (`AgentSessionReader.listSessions`, unified across 6 agents):
+**Reader contract** (`AgentSessionReader.listSessions`, unified across agents):
 
 ```ts
 listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
@@ -569,7 +616,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 ```
 
 - Must first establish a **total order** by mtime desc on the **full set** before slicing; any early termination before establishing total order is wrong (first principles).
-- Negative offset is treated as 0 (all 5 readers use `Math.max(0, offset)` uniformly, preventing silent empty pages).
+- Negative offset is treated as 0 (every reader uses `Math.max(0, offset)` uniformly, preventing silent empty pages).
 - `getNewestSession(cwd)` internally = `listSessions(cwd, { limit: 1 }).sessions[0] ?? null`.
 - codex's `listCodexRollouts` returns `{ entries, total }`, based on `getSessionIndex` (full walk + first-line `session_meta` + stat mtime, 5s TTL), only fully parsing files within the page.
 - kimi default limit 20, aligned with other agents.
@@ -642,7 +689,7 @@ Approach: `configCardIds` remembers the config cards that were interacted with (
 6. **Explicit kind**: `EnqueueOptions.taskMeta.kind` (`message` by default / `compact` / `command`) decides the card label; the compact action list is single-sourced in `COMPACT_ACTION_CMDS` (`src/router/index.ts`), and `src/index.ts` also uses it to decide `editable`.
 7. **The queue.immediate run card lands after the final toast**: the handler registers a one-shot `holdQueueTaskRun` at its entry and releases it in `finally`. The target slot still begins normally (the queue card flips to executing and the begin bookkeeping is unchanged), but `forwardToClaude` waits for the current lane occupant's hold before `cardSession.start()`. When the queue chain advances inside a stop / card-PATCH await window, the run card therefore cannot overtake the toast. Otherwise the toast becomes the newest message: the chat-list preview stays on the toast text and later run-card title changes (thinking / tool / done) are invisible without opening the conversation. Anchor: `test_anchor_immediate_toast_precedes_target_run_card` in `queue-immediate-feedback.test.ts`.
 
-**Test anchors**: `tests/anchor/queue-card-arm/queue-card-arm.test.ts` (identity / position / buttons, section `排队卡按 lane 占用者渲染（anchor）`), `queue-immediate-guards.test.ts` (execution-layer guard) and `queue-immediate-feedback.test.ts` (run-card vs. final-toast ordering).
+**Test anchors**: `tests/anchor/queue-card-arm/queue-card-arm.test.ts` (identity / position / buttons, section `排队卡按 lane 占用者渲染`), `queue-immediate-guards.test.ts` (execution-layer guard).
 
 ### 9.27 codex app-server: Notifications Must Be Filtered by Thread Ownership, Sub-agent Threads May Not Pollute the Session Pointer
 

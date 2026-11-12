@@ -119,7 +119,6 @@ export class PiRpcTranslator {
   private accOutput = 0;
   private accCacheRead = 0;
   private accCacheCreation = 0;
-  private accReasoning = 0;
   private lastTotalTokens: number | undefined;
   private hasUsage = false;
 
@@ -152,7 +151,6 @@ export class PiRpcTranslator {
       this.accOutput === 0 &&
       this.accCacheRead === 0 &&
       this.accCacheCreation === 0 &&
-      this.accReasoning === 0 &&
       this.lastTotalTokens === undefined
     ) {
       return undefined;
@@ -162,8 +160,6 @@ export class PiRpcTranslator {
       output_tokens: this.accOutput,
       cache_read_tokens: this.accCacheRead,
       cache_creation_tokens: this.accCacheCreation,
-      // 推理 token（pi usage.reasoning 累加）：> 0 才携带，缺省不展示。
-      ...(this.accReasoning > 0 ? { reasoning_tokens: this.accReasoning } : {}),
       ...(this.lastTotalTokens != null ? { total_tokens: this.lastTotalTokens } : {}),
     };
   }
@@ -345,7 +341,6 @@ export class PiRpcTranslator {
     this.accOutput += u.output ?? 0;
     this.accCacheRead += u.cacheRead ?? 0;
     this.accCacheCreation += u.cacheWrite ?? 0;
-    this.accReasoning += u.reasoning ?? 0;
     if (u.totalTokens != null) this.lastTotalTokens = u.totalTokens;
   }
 

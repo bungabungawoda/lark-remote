@@ -205,7 +205,7 @@ describe('PiRpcTranslator', () => {
   });
 
   // =========================================================================
-  // 信息保真 compaction 通知 / reasoning token / toolcall 占位
+  // 信息保真 compaction 通知 / toolcall 占位
   // =========================================================================
 
   it('test_anchor_compaction_start_produces_info_notice_with_reason', () => {
@@ -241,7 +241,7 @@ describe('PiRpcTranslator', () => {
     expect(events[0]).toMatchObject({ type: 'notice', level: 'info' });
   });
 
-  it('test_anchor_accumulates_reasoning_tokens_into_result_usage', () => {
+  it('test_anchor_accumulates_message_usage_into_result_usage', () => {
     const t = new PiRpcTranslator();
     t.setSessionId('aaaaaaaa-1111-2222-3333-444444444444');
     t.handleEvent({
@@ -249,7 +249,7 @@ describe('PiRpcTranslator', () => {
       message: {
         role: 'assistant',
         content: [{ type: 'text', text: 'a' }],
-        usage: { input: 100, output: 20, reasoning: 50 },
+        usage: { input: 100, output: 20 },
       },
     });
     t.handleEvent({
@@ -257,13 +257,13 @@ describe('PiRpcTranslator', () => {
       message: {
         role: 'assistant',
         content: [{ type: 'text', text: 'b' }],
-        usage: { input: 50, output: 10, reasoning: 50 },
+        usage: { input: 50, output: 10 },
       },
     });
     const result = t.produceResultFromSettled();
     expect(result).toMatchObject({
       type: 'result',
-      usage: { input_tokens: 150, reasoning_tokens: 100 },
+      usage: { input_tokens: 150, output_tokens: 30 },
     });
   });
 

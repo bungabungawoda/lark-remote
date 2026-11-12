@@ -17,7 +17,7 @@
 - 整个过程的进度实时显示在飞书的一张卡片上；
 - 完成后卡片显示「✅ 已完成」。回到电脑前，改动已经在磁盘上了。
 
-lark-remote 就是飞书和 Claude Code 之间的「传话筒」。
+lark-remote 负责在两者之间搬运消息：它把你的话交给 Claude Code，再把 Claude Code 的工作过程实时画回飞书卡片。想先看懂程序内部是怎么运转的，见 [`architecture/how-it-works.md`](architecture/how-it-works.md)。
 
 ---
 
@@ -202,7 +202,7 @@ bun run test        # 跑全部测试，必须全绿
 
 两个都过了才算改完。有一个红了就先修，再改下一步。
 
-> 测试是什么？就是项目里写好的「自动检查程序」，确保你的改动没把已有功能弄坏。本项目有近 300 个测试文件，跑一遍通常一两分钟。
+> 测试是什么？就是项目里写好的「自动检查程序」，确保你的改动没把已有功能弄坏。本项目有三百多个测试文件，跑一遍通常一两分钟。
 
 ---
 
@@ -245,6 +245,7 @@ lark-remote 现在支持 8 种 AI：Claude、Codex、OpenCode、Pi、Kimi、DSH�
 
 | 想了解                         | 看哪份文档                                                         |
 | ------------------------------ | ------------------------------------------------------------------ |
+| 程序内部怎么运转（带图解）     | [`architecture/how-it-works.md`](architecture/how-it-works.md)     |
 | 所有命令的详细用法             | [`usage.md`](usage.md)                                             |
 | 整体设计、JSONL 事件、踩过的坑 | [`architecture/design.md`](architecture/design.md)                 |
 | 单卡流式输出怎么工作的         | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
