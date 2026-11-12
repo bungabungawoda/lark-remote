@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-11-13
+
+### 文档
+
+- **新增运行原理图解（中英 `architecture/how-it-works.md`）**：零基础友好的消息旅程说明，含组件图、消息时序、命令分流与卡片状态机四张 Mermaid 图；`design.md` / `streaming-card.md` 的架构图与数据流同步换 Mermaid
+- **全量文档与代码对齐**：agent 名单补 CodeBuddy / Qoder（对齐 `AGENT_KINDS`）、命令表补 `/update` `/clone` `/download` `/quit`、孤儿清理口径改为 `getRunner`→`killOrphan`、`/config` 展示顺序标注 `DEFAULT_AGENT_ORDER` 单源、reader 计数指向事实源；英文 `design.md` 与中文版逐段对齐
+- **修文档链接**：英文索引剔除指向不存在文件的引用，运行原理文的中英互链路径修正
+
+### 变更
+
+- **用量区移除 Reasoning token 行及其透传链路**：`ResultEvent.usage`、`normalizeResultUsage`、`RunUsageCollector`、`UsageSnapshot`、pi translator 与 `UsageAccumulator` 不再采集 / 传递 reasoning token，相关测试同步收敛
+
+### 修复
+
+- **`/config` 切换 agent 走清空分支时回执带工作区行**：与 `/new` 同形追加 `📁 <cwd>`（共用 `workspaceLine()`，恢复 / 显式选择分支不重复加）；顺带修 `workspaceLine` 空 cwd 落 `(未设置)` 占位，不再发出空路径
+
+## [0.7.0] - 2026-11-12
 ## [0.7.0] - 2026-11-12
 
 ### 新增
