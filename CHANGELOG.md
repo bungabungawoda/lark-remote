@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-12
+
+### 新增
+
+- **自定义端点模型清单并入 `/config` 下拉**：claude / codex 指向自定义 base（relay、自建网关、厂商兼容端点）时，自动探测端点实际列出的模型，探到的 id 与原配置求并集后进模型下拉；探测失败不改配置，原模型不受影响
+- **pi 模型清单改读 `pi --list-models`**：内置 provider 的模型不再丢失
+
+### 修复
+
+- **pi 思考级别补 max**：off 档不再被跳过
+- **pi 会话目录定位兼容含下划线的工作目录**：会话目录编码改用 pi 真实落盘规则（保留下划线），cwd 含下划线时 jsonl 用量不再读空、卡片不再退回 per-run live 口径
+
 ## [0.6.4] - 2026-11-11
 
 ### 修复
