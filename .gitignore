@@ -75,6 +75,9 @@ scripts/*.sh
 .zcode/
 .qoder/
 
+# 本地维护工具（含个人环境假设，不入库）
+scripts/verify-doc-*.ts
+
 # 本地个人数据台账与生成的报告（非项目资产，不入库）
 holding*.toml
 holding_report_*.md
