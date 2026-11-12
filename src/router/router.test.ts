@@ -4423,6 +4423,8 @@ describe('config switch agent sends Resume card', () => {
     const texts = collectCardTexts(card!.body?.elements ?? []);
     const allText = texts.join(' ');
     expect(allText).toContain('session 已清空');
+    // 清空分支 = 下一条消息在此工作区开新对话：回执必须带 📁 工作区（与 /new 同形）
+    expect(allText).toContain(`📁 ${dir}`);
     // No new-session button: the next message already starts a fresh session,
     // a button would mislead users into thinking a click is required
     expect(JSON.stringify(card!.body?.elements ?? [])).not.toContain('"cmd":"new-session"');

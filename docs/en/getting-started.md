@@ -197,7 +197,7 @@ bun run test        # Run all tests, must all pass
 
 Both must pass for the change to be considered done. If either one is red, fix it before moving on.
 
-> What are tests? They're "automatic check programs" written in the project to make sure your changes didn't break existing functionality. This project has nearly 300 test files, and a full run usually takes a minute or two.
+> What are tests? They're "automatic check programs" written in the project to make sure your changes didn't break existing functionality. This project has three hundred-plus test files, and a full run usually takes a minute or two.
 
 ---
 

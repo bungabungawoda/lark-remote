@@ -51,7 +51,7 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# 默认 agent：claude | codex | opencode | pi | kimi | dsh，默认 claude
+# 默认 agent：claude | codex | opencode | pi | kimi | dsh | codebuddy | qoder，默认 claude
 defaultAgent: claude
 
 claude:
@@ -107,6 +107,7 @@ lark-remote 启动后不在终端输出，运行日志写入 `~/.lark-remote/log
 | `/ps` | - | 是否有进程在跑 |
 | `/restart` | - | 原地自重启 lark-remote（新进程同 config 接管） |
 | `/clone [name]` | - | 复制分身：克隆当前配置到新目录并扫码创建新飞书应用，完成后自动绑定、同步状态并拉起新实例 |
+| `/update` | `/u` | 查询 npm 最新版本并自升级（`/update check` 只查不装；`--dev` 源码模式不支持自升级） |
 | `/config get\|set` | `/c` | 查改运行时配置（agent-aware 卡片） |
 | `/order save\|list\|edit\|alias` | `/o` | 收藏常用指令；`/order edit` 修改指令文本（保留别名/使用统计）；`/order alias` 注册快捷别名（输入 `$name` 展开） |
 | `!<cmd>` | - | 执行 bash 命令并流式输出到卡片（绕过串行队列） |

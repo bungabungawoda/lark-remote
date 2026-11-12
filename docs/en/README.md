@@ -14,8 +14,10 @@ Browse by topic:
 
 ## Architecture & Design
 
+- [architecture/how-it-works.md](architecture/how-it-works.md) — How it works: the journey of a message (beginner-friendly, illustrated; start here).
 - [architecture/design.md](architecture/design.md) — Overall design, JSONL events, config semantics, §9 known pitfalls (the most important design document).
 - [architecture/streaming-card.md](architecture/streaming-card.md) — Single-card streaming architecture (RunCardSession / BashCardSession lifecycle, degradation, concurrency control).
+- [architecture/token-usage-scope.md](architecture/token-usage-scope.md) — Token usage semantics, per-reader responsibilities, and regression history.
 - [cardkit-layout.md](cardkit-layout.md) — Feishu CardKit 2.0 card layout pitfall guide.
 
 ## Guides

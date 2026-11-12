@@ -77,6 +77,9 @@ describe('config.save sends persistent message notification on agent switch', ()
     const text = lastNotice(sendResultMock);
     expect(text).toContain('Pi');
     expect(text).toContain('切换');
+    // 清空分支（新 agent 无 session）= 下一条消息在此工作区开新对话，
+    // 回执与 /new 同形：带 📁 工作区行。
+    expect(text).toContain(`📁 ${cwd}`);
     // sendResult 第二参数必须原样传 ctx（userId/chatId/messageId），保证
     // 持久化消息作为当前对话的回复发出，而不是发到别的会话
     expect(sendResultMock).toHaveBeenCalledWith(expect.anything(), ctx);

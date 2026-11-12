@@ -289,23 +289,22 @@ describe('formatUsageStats', () => {
   });
 
   // =========================================================================
-  // 信息保真 Model / Cost / Reasoning token 三行（各自仅在值存在时）
+  // 信息保真 Model 行（仅在值存在时）；Cost / Reasoning token 行已移除
   // =========================================================================
 
-  it('信息保真：model/reasoningTokens 存在时输出对应行；Cost 行已移除', () => {
+  it('信息保真：model 存在时输出对应行；Cost / Reasoning token 行不再渲染', () => {
     const out = formatUsageStats({
       contextLength: 5000,
       model: 'test-model',
-      reasoningTokens: 100,
       inputTokens: 1000,
       outputTokens: 50,
     });
     expect(out).toContain('Model - test-model');
-    expect(out).toContain('Reasoning token - 100');
     expect(out).not.toContain('Cost - ');
+    expect(out).not.toContain('Reasoning token -');
   });
 
-  it('信息保真：model/costUsd/reasoningTokens 缺省时不含这三行', () => {
+  it('信息保真：model 缺省时不含 Model 行', () => {
     const out = formatUsageStats({
       contextLength: 5000,
       inputTokens: 1000,

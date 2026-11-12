@@ -211,7 +211,7 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 
 ## 五、命令
 
-直接发非 `/` 开头的消息即转发给当前 agent。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`、`/resume /r`、`/config /c`、`/order /o`、`/download /d`）：
+直接发非 `/` 开头的消息即转发给当前 agent。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`（也可 `/quit`）、`/resume /r`、`/config /c`、`/order /o`、`/download /d`、`/update /u`）：
 
 | 命令                                        | 别名 | 行为                                                                                                                                                         |
 | ------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -237,7 +237,8 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 | `/order edit <orderId\|序号> <新文本>`      | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计）                                                                                                 |
 | `/order alias add <orderId\|序号> <别名名>` | `/o` | 给指令绑定别名（也可在卡片上「＋别名」操作），之后输入 `$name` 即展开                                                                                        |
 | `/order alias rm <orderId\|序号>`           | `/o` | 移除指令的别名                                                                                                                                               |
-| `/exit`                                     | `/e` | 退出 lark-remote                                                                                                                                             |
+| `/exit`                                     | `/e` | 退出 lark-remote（别名 `/quit`）                                                                                                                             |
+| `/update`                                   | `/u` | 查询 npm 上的最新版本并自升级；`/update check` 只查不装；以 `--dev` 启动时（源码开发模式）不支持自升级，请 git pull 后重新构建                             |
 | `/restart`                                  | -    | 原地自重启 lark-remote：新进程同 config 接管，启动通知稍后送达                                                                                               |
 | `/clone <name>`                             | -    | 复制分身：克隆配置到新目录并扫码创建新应用，完成后自动绑定并拉起新实例                                                                                       |
 
@@ -274,7 +275,7 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 
 #### `/resume`：切换历史 session
 
-每个 agent（claude/codex/opencode/pi/kimi/dsh）的对话都有一个 session id，lark-remote 默认在每次 run 后记住它，下条消息用 `--resume` 续上。`/resume` 用来在历史 session 之间切换：
+每个 agent（claude/codex/opencode/pi/kimi/dsh/codebuddy/qoder）的对话都有一个 session id，lark-remote 默认在每次 run 后记住它，下条消息用 `--resume` 续上。`/resume` 用来在历史 session 之间切换：
 
 - **`/resume`** 或 **`/resume list`**：列出当前目录下当前 agent 的 session（卡片，按最近使用排序，每页 5 条带分页栏；点击按钮即切换）。当前 session 标记 ✓。
 - **`/resume <agent>`**：查看指定 agent 的 session 列表（如 `/resume codex`）。
@@ -488,6 +489,7 @@ stream 生命周期）、bridge（work queue + control lane + 空闲超时自动
 
 | 想了解                     | 看哪里                                                                                                                  |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 程序内部怎么运转（带图解） | [`architecture/how-it-works.md`](architecture/how-it-works.md)                                                          |
 | 整体设计、JSONL 事件、坑点 | [`architecture/design.md`](architecture/design.md)                                                                      |
 | 单卡流式架构与飞书验收     | [`architecture/streaming-card.md`](architecture/streaming-card.md)                                                      |
 | 新增 agent 接入模板        | [`guides/add-new-agent.md`](guides/add-new-agent.md)                                                                    |

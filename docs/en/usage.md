@@ -168,7 +168,7 @@ Logs rotate daily and are stored at `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-
 
 ## 5. Commands
 
-Any message not starting with `/` is forwarded to Claude. Messages starting with `/` are treated as built-in commands. **Some commands support single-letter aliases** (`/help /h`, `/status /s`, `/stop /t`, `/exit /e`, `/resume /r`, `/config /c`, `/order /o`, `/download /d`):
+Any message not starting with `/` is forwarded to Claude. Messages starting with `/` are treated as built-in commands. **Some commands support single-letter aliases** (`/help /h`, `/status /s`, `/stop /t`, `/exit /e` (also `/quit`), `/resume /r`, `/config /c`, `/order /o`, `/download /d`, `/update /u`):
 
 | Command                                | Alias | Behavior                                                                                                                                                                                                                                                                  |
 | -------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -194,7 +194,8 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/order edit <orderId\|N> <new text>`  | `/o`  | Edit the saved text of an instruction (alias and usedAt are preserved)                                                                                                                                                                                                    |
 | `/order alias add <orderId\|N> <name>` | `/o`  | Bind an alias to a saved instruction (the `/order` card's 「＋别名」 button is the primary entry); typing `$name` triggers it                                                                                                                                             |
 | `/order alias rm <orderId\|N>`         | `/o`  | Remove an instruction's alias (`/order alias list` folds into the same card)                                                                                                                                                                                              |
-| `/exit`                                | `/e`  | Exit lark-remote                                                                                                                                                                                                                                                          |
+| `/exit`                                | `/e`  | Exit lark-remote (alias `/quit`)                                                                                                                                                                                                                                          |
+| `/update`                              | `/u`  | Check npm for the latest version and self-update; `/update check` only checks; unsupported under `--dev` (source/dev mode)                                                                                                                                                |
 | `/restart`                             | -     | Restart lark-remote in place: the new process takes over with the same config, startup notification arrives shortly                                                                                                                                                       |
 | `/clone <name>`                        | -     | Clone lark-remote: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance                                                                                  |
 
@@ -231,7 +232,7 @@ Save frequently used directories as short names, avoiding typing long paths each
 
 #### `/resume`: Switching Historical Sessions
 
-Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. lark-remote remembers it after each run and uses `--resume` to continue with the next message. `/resume` is used to switch between historical sessions:
+Each agent's (claude/codex/opencode/pi/kimi/dsh/codebuddy/qoder) conversation has a session id. lark-remote remembers it after each run and uses `--resume` to continue with the next message. `/resume` is used to switch between historical sessions:
 
 - **`/resume`** or **`/resume list`**: List sessions for the current agent in the current directory (card, sorted by most recently used, 5 per page with pagination; click a button to switch). The current session is marked with ✓.
 - **`/resume <agent>`**: View the session list for a specific agent (e.g., `/resume codex`).
@@ -436,6 +437,7 @@ Test coverage: config, session, workspace, runner (JSONL parsing + exit code), c
 
 | Want to learn about                                      | Where to look                                                                                                           |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| How the program works inside (illustrated)               | [`architecture/how-it-works.md`](architecture/how-it-works.md)                                                          |
 | Overall design, JSONL events, pitfalls                   | [`architecture/design.md`](architecture/design.md)                                                                      |
 | Single-card streaming architecture and Feishu validation | [`architecture/streaming-card.md`](architecture/streaming-card.md)                                                      |
 | New agent integration template                           | [`guides/add-new-agent.md`](guides/add-new-agent.md)                                                                    |

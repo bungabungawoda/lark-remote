@@ -6,12 +6,11 @@ interface TokenComponents {
   output: number;
   cacheRead: number;
   cacheCreation: number;
-  reasoning?: number;
   total?: number;
 }
 
 describe('UsageAccumulator', () => {
-  it('新实例：count === 0；last === null；totals 六个字段全为 0', () => {
+  it('新实例：count === 0；last === null；totals 五个字段全为 0', () => {
     const acc = new UsageAccumulator();
     expect(acc.count).toBe(0);
     expect(acc.last).toBeNull();
@@ -20,7 +19,6 @@ describe('UsageAccumulator', () => {
       output: 0,
       cacheRead: 0,
       cacheCreation: 0,
-      reasoning: 0,
       total: 0,
     });
   });
@@ -32,7 +30,6 @@ describe('UsageAccumulator', () => {
       output: 10,
       cacheRead: 2,
       cacheCreation: 3,
-      reasoning: 7,
       total: 27,
     };
     acc.add(record);
@@ -42,7 +39,6 @@ describe('UsageAccumulator', () => {
       output: 10,
       cacheRead: 2,
       cacheCreation: 3,
-      reasoning: 7,
       total: 27,
     });
     expect(acc.last).toEqual(record);
@@ -56,7 +52,6 @@ describe('UsageAccumulator', () => {
       output: 20,
       cacheRead: 30,
       cacheCreation: 40,
-      reasoning: 5,
       total: 68,
     });
     expect(acc.count).toBe(2);
@@ -64,14 +59,12 @@ describe('UsageAccumulator', () => {
     expect(acc.totals.output).toBe(22);
     expect(acc.totals.cacheRead).toBe(33);
     expect(acc.totals.cacheCreation).toBe(44);
-    expect(acc.totals.reasoning).toBe(5);
     expect(acc.totals.total).toBe(68);
     expect(acc.last).toEqual({
       input: 10,
       output: 20,
       cacheRead: 30,
       cacheCreation: 40,
-      reasoning: 5,
       total: 68,
     });
   });
@@ -79,7 +72,6 @@ describe('UsageAccumulator', () => {
   it('可选字段缺失按 0', () => {
     const acc = new UsageAccumulator();
     acc.add({ input: 1, output: 2, cacheRead: 3, cacheCreation: 4 });
-    expect(acc.totals.reasoning).toBe(0);
     expect(acc.totals.total).toBe(0);
   });
 

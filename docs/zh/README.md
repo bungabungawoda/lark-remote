@@ -14,8 +14,12 @@ English documentation: [../en/README.md](../en/README.md)
 
 ## 架构与设计
 
+- [architecture/how-it-works.md](architecture/how-it-works.md) — 运行原理：一条消息的旅程（新手友好的图解入门，先读这篇）。
 - [architecture/design.md](architecture/design.md) — 整体设计、JSONL 事件、配置语义、§9 已知坑点合集（最重要的设计文档）。
 - [architecture/streaming-card.md](architecture/streaming-card.md) — 单卡流式输出架构（RunCardSession / BashCardSession 生命周期、降级、并发控制）。
+- [architecture/token-usage-scope.md](architecture/token-usage-scope.md) — Token 用量统计的口径、各 reader 责任与回归史。
+- [architecture/inbound-message-matrix.md](architecture/inbound-message-matrix.md) — 入站消息分派矩阵：飞书各 message_type 的实测处置。
+- [architecture/inbound-unified-input-design.md](architecture/inbound-unified-input-design.md) — 入站统一输入回合设计（文字 + 附件合并成一个回合）。
 - [cardkit-layout.md](cardkit-layout.md) — 飞书 CardKit 2.0 卡片布局避坑指南。
 
 ## 操作指南

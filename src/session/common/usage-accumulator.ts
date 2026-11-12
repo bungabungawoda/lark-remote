@@ -12,7 +12,6 @@ interface TokenComponents {
   output: number;
   cacheRead: number;
   cacheCreation: number;
-  reasoning?: number;
   /** Agent-declared total; when absent, total is the sum of the four required fields. */
   total?: number;
 }
@@ -22,10 +21,9 @@ function emptyTotals(): {
   output: number;
   cacheRead: number;
   cacheCreation: number;
-  reasoning: number;
   total: number;
 } {
-  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, reasoning: 0, total: 0 };
+  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 };
 }
 
 function cloneTotals(t: {
@@ -33,14 +31,12 @@ function cloneTotals(t: {
   output: number;
   cacheRead: number;
   cacheCreation: number;
-  reasoning: number;
   total: number;
 }): {
   input: number;
   output: number;
   cacheRead: number;
   cacheCreation: number;
-  reasoning: number;
   total: number;
 } {
   return {
@@ -48,7 +44,6 @@ function cloneTotals(t: {
     output: t.output,
     cacheRead: t.cacheRead,
     cacheCreation: t.cacheCreation,
-    reasoning: t.reasoning,
     total: t.total,
   };
 }
@@ -61,7 +56,6 @@ export class UsageAccumulator {
     output: number;
     cacheRead: number;
     cacheCreation: number;
-    reasoning: number;
     total: number;
   } | null = null;
   private _compactCount = 0;
@@ -82,7 +76,6 @@ export class UsageAccumulator {
     output: number;
     cacheRead: number;
     cacheCreation: number;
-    reasoning: number;
     total: number;
   } {
     return cloneTotals(this._totals);
@@ -94,7 +87,6 @@ export class UsageAccumulator {
     output: number;
     cacheRead: number;
     cacheCreation: number;
-    reasoning: number;
     total: number;
   } | null {
     return this._last ? cloneTotals(this._last) : null;
@@ -111,17 +103,15 @@ export class UsageAccumulator {
     const output = record.output;
     const cacheRead = record.cacheRead;
     const cacheCreation = record.cacheCreation;
-    const reasoning = record.reasoning ?? 0;
     const total = record.total ?? 0;
 
     this._totals.input += input;
     this._totals.output += output;
     this._totals.cacheRead += cacheRead;
     this._totals.cacheCreation += cacheCreation;
-    this._totals.reasoning += reasoning;
     this._totals.total += total;
 
-    this._last = { input, output, cacheRead, cacheCreation, reasoning, total };
+    this._last = { input, output, cacheRead, cacheCreation, total };
     this._count++;
   }
 

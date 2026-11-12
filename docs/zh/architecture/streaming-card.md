@@ -37,21 +37,17 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 ## 3. 数据流
 
-```text
-普通飞书消息
-  → Bridge work queue
-  → runner.run()（registry 按 agent 取实例）
-  → AgentEvent
-  → RunState reducer
-  → renderRunCard()
-  → CardStreamController.update()
-  → 同一 message_id 全卡 patch
+```mermaid
+flowchart TD
+    msg["普通飞书消息"] --> q["Bridge work queue\n（按 cwd 分 lane 串行）"]
+    q --> run["runner.run()\n（registry 按 agent 取实例）"]
+    run -- "AgentEvent 流" --> reduce["RunState reducer"]
+    reduce --> render["renderRunCard()"]
+    render -- "controller.update()" --> patch["同一 message_id 全卡 patch\n（SDK throttle + FIFO）"]
 
-/stop 或 stop cardAction
-  → control lane（绕过 work queue）
-  → 本地 activeRun？Bridge.interruptCurrentRun()
-  → 否则 HostTurnStop(sessionId) → DshRunner.cancelHostTurn()
-  → RunCardSession.finish(interrupted) + runner.stop() / session/cancel
+    stop["/stop 或 stop cardAction\n（control lane，绕过 work queue）"] --> hit{"命中本地 activeRun？"}
+    hit -- "是" --> interrupt["Bridge.interruptCurrentRun()\n→ finish(interrupted) + runner.stop()"]
+    hit -- "否" --> host["HostTurnStop(sessionId)\n→ DshRunner.cancelHostTurn()\n（session/cancel + idle 校验）"]
 ```
 
 核心模块：
