@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import { unescapeMarkdown } from '../../src/card/collapsible.js';
 
 /**
  * Minimal structural view of a CardKit card for tests that inspect
@@ -65,4 +66,39 @@ export function collectCallbackCmds(card: unknown): string[] {
   };
   visit(card);
   return cmds;
+}
+
+/** 内容经 `markdownDiv` 做反斜杠转义的文本组件 tag。 */
+const ESCAPED_MARKDOWN_TAGS = new Set(['lark_md']);
+
+/** 所有文本组件 tag（header 标题、面板标题、div 文本）。 */
+const TEXT_TAGS = new Set(['lark_md', 'plain_text', 'markdown']);
+
+/**
+ * 递归收集卡片里所有文本组件的内容（header 标题 + body 任意嵌套层级）。
+ *
+ * `lark_md` 内容由 `markdownDiv` 做反斜杠转义（`\` → `\\`），这里还原后再返回，
+ * 让断言比对的是「用户看到的原文」。Windows 路径天然含 `\`，不还原时任何
+ * `toContain(<路径>)` 断言都只在 ci-windows 假红——macOS/Linux 路径无反斜杠，
+ * 永远绿。`plain_text`（header 标题、按钮文案）与 `markdown`（面板标题）未经
+ * 转义，原样返回：对它们还原会吃掉合法的 `\\` 字面量。
+ */
+export function collectCardTexts(card: unknown): string[] {
+  const out: string[] = [];
+  const visit = (v: unknown): void => {
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item);
+      return;
+    }
+    if (!v || typeof v !== 'object') return;
+    const obj = v as Record<string, unknown>;
+    const { tag, content } = obj;
+    if (typeof tag === 'string' && TEXT_TAGS.has(tag) && typeof content === 'string') {
+      out.push(ESCAPED_MARKDOWN_TAGS.has(tag) ? unescapeMarkdown(content) : content);
+      return;
+    }
+    for (const inner of Object.values(obj)) visit(inner);
+  };
+  visit(card);
+  return out;
 }

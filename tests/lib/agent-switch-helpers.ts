@@ -6,6 +6,7 @@
  */
 
 import { AppConfigSchema, type AppConfig } from '../../src/config/index.js';
+import { collectCardTexts } from './card-view.js';
 
 /**
  * agent-switch anchor 系列的规范测试配置（全 agent 槽位填充）。
@@ -40,28 +41,14 @@ export const DISPLAY: Record<string, string> = {
   kimi: 'Kimi',
 };
 
-/** Extract all text content from a CardKit 2.0 card (header + body) */
+/**
+ * Extract all text content from a CardKit 2.0 card (header + body).
+ *
+ * 走 card-view 的单源遍历：`lark_md` 内容在那里已还原 markdown 转义，
+ * 断言比对的是用户看到的原文（Windows 路径含 `\`，不还原只在 ci-windows 假红）。
+ */
 function extractCardTexts(card: unknown): string {
-  if (!card || typeof card !== 'object') return '';
-  const c = card as { header?: { title?: { content?: string } }; body?: { elements?: unknown[] } };
-  const parts: string[] = [];
-  if (c.header?.title?.content) parts.push(c.header.title.content);
-  if (c.body?.elements && Array.isArray(c.body.elements)) {
-    for (const el of c.body.elements) {
-      const e = el as { text?: { content?: string }; columns?: Array<{ elements?: unknown[] }> };
-      if (e.text?.content) parts.push(e.text.content);
-      for (const col of e.columns ?? []) {
-        const colEl = col as { elements?: unknown[] };
-        if (colEl.elements) {
-          for (const child of colEl.elements) {
-            const ch = child as { text?: { content?: string } };
-            if (ch.text?.content) parts.push(ch.text.content);
-          }
-        }
-      }
-    }
-  }
-  return parts.join(' ');
+  return collectCardTexts(card).join(' ');
 }
 
 /** Get the last sendResult call's content as concatenated card text (or raw text) */

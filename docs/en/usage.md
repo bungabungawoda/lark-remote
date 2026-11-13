@@ -248,6 +248,13 @@ Each agent's (claude/codex/opencode/pi/kimi/dsh/codebuddy/qoder) conversation ha
 
 > `/cd`, `/ws use`, and clicking to switch directories in `/ls` all clear the session (start a new conversation, section 9.1), because `--resume` restores Claude's memory of the old cwd, and resuming a session across directories causes file read/write confusion. To resume an old session, switch to the corresponding directory first, then use `/resume`. When Claude uses `EnterWorktree` within a session, it relocates to the worktree; `/s` displays the "Session directory" to show the actual location, and `/new` returns to the working directory.
 
+#### `/config`: the Configuration Card
+
+- Dropdowns and inputs on the card only change a **draft**; click the 💾 save button to write it to disk. Re-opening the card with `/config` reuses the same draft.
+- The draft is pushed to every recently interacted config card, so an older card never shows values that differ from what saving would submit.
+- To skip the card, write a value directly with `/config <key> <value>`; it lands on disk and takes effect immediately, e.g. `/config claude.model haiku` or `/config pi.thinking max`. The `pi.` / `codex.` / `opencode.` / `kimi.` prefixes are mapped to `agents.<name>.`, and a full path such as `agents.pi.model` works too.
+- When a model dropdown is long (providers often list hundreds of models), the card is trimmed to fit Feishu's component budget and a hint at the top reports how many options were omitted; the trimmed models can still be set with the direct-write form above.
+
 #### `/stop`: Terminating a Process
 
 `/stop` uses a dedicated control channel and will not queue behind the current Claude run. It calls `runner.stop({ immediate: true })`: SIGTERM followed immediately by SIGKILL, **no grace wait** (`stopGraceMs` only serves the idle-timeout auto-stop path, default 5s, not user-adjustable). The "⏹ Stop" button on the run card behaves identically.

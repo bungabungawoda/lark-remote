@@ -6,6 +6,8 @@
  * reasoning 文件 + 5 个 resume 文件逐字同构）。
  */
 
+import { unescapeMarkdown } from '../../src/card/collapsible.js';
+
 export type CardElementValue = {
   cmd?: string;
   agent?: string;
@@ -17,7 +19,7 @@ export type CardElementValue = {
 
 export type CardElement = {
   tag?: string;
-  text?: { content?: string };
+  text?: { tag?: string; content?: string };
   columns?: Array<{ elements?: CardElement[] }>;
   behaviors?: Array<{ value?: CardElementValue }>;
   options?: Array<{ value?: string; selected?: boolean }>;
@@ -76,10 +78,18 @@ export function cardHeaderTitle(card: object): string {
   return header?.title?.content ?? '';
 }
 
-/** 卡片 body（含 column_set 嵌套）里的全部文本行。 */
+/** 卡片 body（含 column_set 嵌套）里的全部文本行。
+ *
+ * `lark_md` 内容经 `markdownDiv` 做过反斜杠转义，这里还原回用户看到的原文；
+ * 不还原时 `toContain(<含反斜杠的路径>)` 只会在 Windows 上假红。
+ */
 export function cardTexts(card: Card): string[] {
   return flattenElements(card)
-    .map((el) => el.text?.content)
+    .map((el) => {
+      const content = el.text?.content;
+      if (typeof content !== 'string') return undefined;
+      return el.text?.tag === 'lark_md' ? unescapeMarkdown(content) : content;
+    })
     .filter((content): content is string => typeof content === 'string');
 }
 

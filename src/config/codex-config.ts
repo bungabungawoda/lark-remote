@@ -13,8 +13,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import TOML from '@iarna/toml';
-import { getLogger } from '../logger/index.js';
 import { runTextCommandAsync, runTextCommandSync } from '../platform/cli-command.js';
+import { SyncCatalog } from './catalog-cache.js';
 import {
   cachedEndpointModels,
   warmEndpointModels,
@@ -111,22 +111,22 @@ interface BundledModelRaw {
   default_reasoning_level?: unknown;
 }
 
-/** Unified catalog cache entry (active or bundled source) */
-interface CatalogCacheEntry {
-  key: string;
-  models: BundledModelInfo[];
-  ts: number;
-  /** true = 命令失败或结果为空（短 TTL 负缓存） */
-  failed: boolean;
-}
-
 /** Bundled models from codex binary, 1h TTL is enough (only change on binary upgrade) */
 const BUNDLED_CACHE_TTL_MS = 60 * 60 * 1000;
 /** 失败/空结果负缓存 TTL：避免每次卡片构建同步阻塞最长 8s */
 const NEGATIVE_CACHE_TTL_MS = 30 * 1000;
-let catalogCache: CatalogCacheEntry | null = null;
-/** In-flight async catalog loads, keyed by cache key — dedup concurrent warm ups. */
-const catalogInFlight = new Map<string, Promise<BundledModelInfo[]>>();
+/**
+ * codex 目录读取上下文：bundled 决定命令参数（--bundled 与否）。
+ * 一个 SyncCatalog 实例按 keyOverride 适配多个 codexHome（测试常用临时目录）。
+ */
+interface CodexCatalogCtx {
+  bundled: boolean;
+}
+
+function codexCatalogContext(codexHome?: string): { key: string; ctx: CodexCatalogCtx } {
+  const { key, bundled } = computeCodexCatalogKey(codexHome);
+  return { key, ctx: { bundled } };
+}
 
 /**
  * Read config.toml `model_catalog_json` path (tilde-expanded).
@@ -231,86 +231,46 @@ export function parseCodexModelsOutput(stdout: string): BundledModelInfo[] {
 }
 
 /**
- * 统一目录入口：catalog 模式（model_catalog_json 已声明，含声明退化 ''）跑
- * `debug models`（无 --bundled），否则（未声明或 config.toml 解析失败）跑
- * `debug models --bundled`。注：codex 无参 `debug models` 在
- * uses_codex_backend()/has_command_auth() 时会请求远端 /models（models-manager
- * manager.rs / models_endpoint.rs）；本项目以 API-key 模式运行（无 ChatGPT/命令
- * 认证），结果与 bundled 一致，故非 catalog 用 --bundled（已文档化）。
- * 缓存：键含 binary/home/mode/models.json mtime:size + config.toml mtime:size
- * 成功结果 TTL 1h，失败/空结果短 TTL 负缓存；stat 异常时
- * 指纹为空。
+ * 统一 SWR 目录缓存（catalog 模式跑 `debug models`，否则 `--bundled`）。
  *
- * 同步路径（卡片构建用）：缓存命中直接返回；若有一个后台异步加载
- * （`loadCodexCatalogModelsAsync` / 启动 warm）在途，则不阻塞事件循环、不重复
- * spawn，直接返回 [] 走既有 fallback（FALLBACK_MODELS / currentModel）——该
- * [] 状态与命令失败/超时的已有语义一致，由调用方既有 fallback 兜底。
+ * 同步读快照、后台异步刷新：TTL 过期不再同步跑 `codex debug models`（上限 8s，
+ * 会卡住整个事件循环），旧快照立即返回。
+ *
+ * 缓存：键含 binary/home/mode/models.json mtime:size + config.toml mtime:size；
+ * 成功 TTL 1h，失败/空结果短 TTL 负缓存。
+ */
+const codexCatalog = new SyncCatalog<BundledModelInfo[], CodexCatalogCtx>({
+  agent: 'codex',
+  key: () => computeCodexCatalogKey().key,
+  loadSync: ({ bundled }) => parseCodexModelsOutput(runCodexCommandSync(catalogArgs(bundled))),
+  loadAsync: async ({ bundled }) =>
+    parseCodexModelsOutput(await runCodexCommandAsync(catalogArgs(bundled))),
+  fallback: () => [],
+  isEmpty: (models) => models.length === 0,
+  ttlMs: BUNDLED_CACHE_TTL_MS,
+  negativeTtlMs: NEGATIVE_CACHE_TTL_MS,
+});
+
+/**
+ * codex 当前模型目录（同步，卡片构建用）。
+ *
+ * 同步路径只读快照：命中直接返回；TTL 过期返回旧快照并在后台刷新；刷新在途
+ * 且无快照时返回 [] 交给调用方既有 fallback（FALLBACK_MODELS / currentModel）。
+ * 冷启动保留一次同步加载，保证首帧就有真实清单；启动 warm 后生产路径几乎不会
+ * 走到这里。
  */
 export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
-  const { key, bundled } = computeCodexCatalogKey(codexHome);
-  const cached = readCachedCatalog(key);
-  if (cached !== undefined) return cached;
-
-  // in-flight 异步加载进行中：不 execFileSync（会阻塞 8s），返回 [] 交给
-  // 调用方既有 fallback；in-flight 完成后下次读取命中缓存。
-  if (catalogInFlight.has(key)) {
-    return [];
-  }
-
-  const now = Date.now();
-  try {
-    const stdout = runCodexCommandSync(catalogArgs(bundled));
-    const models = parseCodexModelsOutput(stdout);
-    catalogCache = { key, models, ts: now, failed: models.length === 0 };
-    return models;
-  } catch (err) {
-    getLogger().warn(
-      `[codex-config] models unavailable for binary "codex": ${(err as Error).message}`,
-    );
-    catalogCache = { key, models: [], ts: now, failed: true };
-    return [];
-  }
+  const { key, ctx } = codexCatalogContext(codexHome);
+  return codexCatalog.read(key, ctx);
 }
 
 /**
- * 异步加载模型目录（execFile，不阻塞事件循环），写入与同步路径共享的
- * `catalogCache`。按缓存 key 复用 in-flight Promise：并发调用（多个 warm /
- * 显式调用）只 spawn 一次 `codex debug models`。
- *
- * 与同步路径的职责划分：启动时用 `warmCodexCatalogCache` 后台预热，使首次打开
- * Codex 配置卡（同步读）时缓存已温、无需 8s execFileSync 阻塞；若用户在 warm
- * 完成前打开卡片，同步路径会检测到 in-flight 并直接返回 [] fallback。
+ * 显式异步加载模型目录（不阻塞事件循环）：单飞刷新快照并返回结果。
+ * 启动预热与测试走这条路径。
  */
 export async function loadCodexCatalogModelsAsync(codexHome?: string): Promise<BundledModelInfo[]> {
-  const { key, bundled } = computeCodexCatalogKey(codexHome);
-  const cached = readCachedCatalog(key);
-  if (cached !== undefined) return cached;
-
-  const inFlight = catalogInFlight.get(key);
-  if (inFlight) return inFlight;
-
-  const p = (async (): Promise<BundledModelInfo[]> => {
-    const now = Date.now();
-    try {
-      const stdout = await runCodexCommandAsync(catalogArgs(bundled));
-      const models = parseCodexModelsOutput(stdout);
-      catalogCache = { key, models, ts: now, failed: models.length === 0 };
-      return models;
-    } catch (err) {
-      getLogger().warn(
-        `[codex-config] models unavailable for binary "codex": ${(err as Error).message}`,
-      );
-      catalogCache = { key, models: [], ts: now, failed: true };
-      return [];
-    }
-  })();
-
-  catalogInFlight.set(key, p);
-  try {
-    return await p;
-  } finally {
-    catalogInFlight.delete(key);
-  }
+  const { key, ctx } = codexCatalogContext(codexHome);
+  return codexCatalog.refresh(key, ctx);
 }
 
 /**
@@ -348,18 +308,6 @@ function computeCodexCatalogKey(codexHome?: string): { key: string; bundled: boo
   return { key, bundled };
 }
 
-/** 读取有效缓存（含负缓存 TTL）；命中返回模型，否则 undefined。 */
-function readCachedCatalog(key: string): BundledModelInfo[] | undefined {
-  const now = Date.now();
-  if (catalogCache && catalogCache.key === key) {
-    const ttl = catalogCache.failed ? NEGATIVE_CACHE_TTL_MS : BUNDLED_CACHE_TTL_MS;
-    if (now - catalogCache.ts < ttl) {
-      return catalogCache.models;
-    }
-  }
-  return undefined;
-}
-
 /** `codex debug models` 参数（--bundled 与否）。 */
 function catalogArgs(bundled: boolean): string[] {
   return bundled ? ['debug', 'models', '--bundled'] : ['debug', 'models'];
@@ -381,12 +329,12 @@ function runCodexCommandAsync(args: string[]): Promise<string> {
  * from `tests/lib/codex-bundled-test-helpers.ts`.
  */
 export function _invalidateCodexBundledCacheForTest(): void {
-  catalogCache = null;
+  codexCatalog.invalidate();
 }
 
 /** Test utility: clear in-flight async catalog loads (see async loader tests). */
 export function _clearCodexCatalogInFlightForTest(): void {
-  catalogInFlight.clear();
+  codexCatalog.invalidate();
 }
 
 /**

@@ -248,6 +248,11 @@ export interface CommandResult {
   text?: string;
   markdown?: string;
   card?: object;
+  /**
+   * 这张卡是 /config 配置卡：发送成功后由 router 登记进 `configCardIds`，
+   * 后续 config.* 的兄弟卡刷新能覆盖它（/c 打开后未点击也应被刷新）。
+   */
+  trackConfigCard?: boolean;
 }
 
 /** Detailed result of one interrupt, for callers that must not over-promise. */

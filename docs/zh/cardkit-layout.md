@@ -165,6 +165,9 @@ column、button、input、select、plain_text / lark_md 文本、select 的每�
 实现侧：`src/card/card-budget.ts` 的 `MAX_CARD_ELEMENTS = 90`（相对实测 99 留
 10% 余量）、`MAX_CARD_COMPONENTS = 190`（相对实测 200 留 5% 余量）、
 `countCardElements()` / `countCardComponents()`，以及 `enforceCardBudget()` 的
-数量裁剪分支（两个预算任一超限都会裁剪）；run 卡片由 `run-renderer.ts` 的
+数量裁剪分支（两个预算任一超限都会裁剪）：先裁下拉选项（按选项数降序、从尾部删、
+选中项必留），裁到刚好够用仍超限才丢整行。**顺序不能反**——配置卡的组件几乎全在
+select 选项上，先丢整行会把「默认 Agent」与 provider 这类导航控件删掉，只留一句
+与本场景无关的「还有 N 个事件未显示」；run 卡片由 `run-renderer.ts` 的
 `withinRunCardBudget()` 做双预算（28KB + 90 元素）检查，正常路径还会按元素预算
 从最新往回省略最旧的步骤（`selectVisibleGroups()`）。

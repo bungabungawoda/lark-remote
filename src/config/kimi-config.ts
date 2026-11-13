@@ -3,10 +3,14 @@
  *
  * Dynamically reads available models from `kimi provider list --json`,
  * provides dynamic dropdown options for /config card.
+ *
+ * 同步读走统一 SWR 快照（`SyncCatalog`）：TTL 过期返回旧清单 + 后台异步刷新，
+ * 不再在卡片构建路径上同步 spawn（上限 10s，会卡住整个事件循环）。
  */
 
 import { getLogger } from '../logger/index.js';
 import { spawnProcessSync } from '../platform/spawn.js';
+import { SyncCatalog } from './catalog-cache.js';
 
 /** Valid thinking effort values for kimi (Layer 1: Schema enum source) */
 export const KIMI_THINKING_EFFORTS = ['low', 'high', 'max'] as const;
@@ -43,7 +47,7 @@ interface KimiProviderListJson {
 }
 
 /** Load Kimi config and return available models */
-interface KimiConfigResult {
+export interface KimiConfigResult {
   /** Current default model */
   currentModel: string;
   /** Available model list */
@@ -56,104 +60,21 @@ interface KimiConfigResult {
   modelDefaultEfforts: Record<string, string>;
 }
 
+/** 成功清单缓存 TTL（与 opencode 对齐）。 */
+const KIMI_CONFIG_CACHE_TTL_MS = 60_000;
+/** 失败负缓存 TTL：命令失败后短时间不重试，避免反复同步阻塞。 */
+const KIMI_NEGATIVE_CACHE_TTL_MS = 30_000;
+
+/** `kimi provider list --json` 调用边界（同步/异步一致）。 */
+const KIMI_COMMAND = {
+  label: 'kimi',
+  timeoutMs: 10_000,
+  maxBuffer: 2 * 1024 * 1024,
+} as const;
+
 /** 清空缓存（仅供测试使用，生产代码无调用点） */
 export function _invalidateKimiConfigCacheForTest(): void {
-  kimiConfigCache = null;
-}
-
-/** Cache for loadKimiConfig to avoid repeated sync calls */
-let kimiConfigCache: { result: KimiConfigResult; timestamp: number } | null = null;
-const KIMI_CONFIG_CACHE_TTL_MS = 60000; // 1 minute TTL
-
-/**
- * Load Kimi models from `kimi provider list --json`.
- * Falls back to defaults if the command fails.
- * Uses caching to avoid repeated sync calls.
- */
-export function loadKimiConfig(): KimiConfigResult {
-  const now = Date.now();
-
-  // Return cached result if still valid
-  if (kimiConfigCache && now - kimiConfigCache.timestamp < KIMI_CONFIG_CACHE_TTL_MS) {
-    return kimiConfigCache.result;
-  }
-
-  const logger = getLogger();
-
-  try {
-    // spawnProcessSync（cross-spawn）而非 execFileSync：kimi 是 npm 全局安装的
-    // .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析（裸名解析到无扩展名的
-    // sh 脚本直接执行失败，.cmd 又 EINVAL）；cross-spawn 与 runner spawn 走
-    // 同一垫片执行路径（posix 直通）。stderr 参与 pipe 以便失败信息可诊断。
-    const res = spawnProcessSync('kimi', ['provider', 'list', '--json'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10000,
-      maxBuffer: 2 * 1024 * 1024,
-      encoding: 'utf-8',
-    });
-    if (res.error) throw res.error;
-    if (res.status !== 0) {
-      const stderr = String(res.stderr ?? '').trim();
-      throw new Error(`kimi exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
-    }
-    const output = String(res.stdout ?? '');
-
-    const data = JSON.parse(output) as KimiProviderListJson;
-
-    if (!data.models || Object.keys(data.models).length === 0) {
-      logger.warn('[kimi-config] no models found in provider list, using defaults');
-      return buildDefaultResult();
-    }
-
-    const modelOptions: string[] = [];
-    const modelDisplayNames: Record<string, string> = {};
-    const modelEfforts: Record<string, string[]> = {};
-    const modelDefaultEfforts: Record<string, string> = {};
-
-    for (const [modelId, modelInfo] of Object.entries(data.models)) {
-      modelOptions.push(modelId);
-      modelDisplayNames[modelId] = modelInfo.displayName;
-
-      // Layer 2: Filter effort values to only include valid ones from KIMI_THINKING_EFFORTS
-      const efforts = modelInfo.supportEfforts ?? [...FALLBACK_EFFORTS];
-      const filteredEfforts = (efforts as string[]).filter((e): e is KimiThinkingEffort =>
-        (KIMI_THINKING_EFFORTS as readonly string[]).includes(e),
-      );
-      // Fallback to default if all filtered out
-      modelEfforts[modelId] = filteredEfforts.length > 0 ? filteredEfforts : [...FALLBACK_EFFORTS];
-
-      // Layer 2: Validate default effort, fallback to 'max' if invalid
-      const def = modelInfo.defaultEffort ?? 'max';
-      modelDefaultEfforts[modelId] = (KIMI_THINKING_EFFORTS as readonly string[]).includes(def)
-        ? def
-        : 'max';
-    }
-
-    // Find current default model from the first provider
-    let currentModel = 'kimi-code/k3';
-    if (data.models['kimi-code/k3']) {
-      currentModel = 'kimi-code/k3';
-    } else if (modelOptions.length > 0) {
-      currentModel = modelOptions[0];
-    }
-
-    const result = {
-      currentModel,
-      modelOptions,
-      modelDisplayNames,
-      modelEfforts,
-      modelDefaultEfforts,
-    };
-
-    kimiConfigCache = { result, timestamp: Date.now() };
-
-    return result;
-  } catch (err) {
-    logger.warn(`[kimi-config] failed to load models: ${(err as Error).message}, using defaults`);
-    const result = buildDefaultResult();
-    kimiConfigCache = { result, timestamp: Date.now() };
-    return result;
-  }
+  kimiCatalog.invalidate();
 }
 
 function buildDefaultResult(): KimiConfigResult {
@@ -180,4 +101,116 @@ function buildDefaultResult(): KimiConfigResult {
       'kimi-code/kimi-for-coding-highspeed': 'max',
     },
   };
+}
+
+/**
+ * 解析 `kimi provider list --json` 输出。
+ *
+ * effort 只保留 schema 枚举内的值（Layer 2 过滤）；默认档非法时回退 `max`。
+ * 清单为空 → 默认清单（卡片不能空下拉）。
+ */
+function parseKimiProviderList(output: string): KimiConfigResult {
+  const logger = getLogger();
+  const data = JSON.parse(output) as KimiProviderListJson;
+
+  if (!data.models || Object.keys(data.models).length === 0) {
+    logger.warn('[kimi-config] no models found in provider list, using defaults');
+    return buildDefaultResult();
+  }
+
+  const modelOptions: string[] = [];
+  const modelDisplayNames: Record<string, string> = {};
+  const modelEfforts: Record<string, string[]> = {};
+  const modelDefaultEfforts: Record<string, string> = {};
+
+  for (const [modelId, modelInfo] of Object.entries(data.models)) {
+    modelOptions.push(modelId);
+    modelDisplayNames[modelId] = modelInfo.displayName;
+
+    // Layer 2: Filter effort values to only include valid ones from KIMI_THINKING_EFFORTS
+    const efforts = modelInfo.supportEfforts ?? [...FALLBACK_EFFORTS];
+    const filteredEfforts = (efforts as string[]).filter((e): e is KimiThinkingEffort =>
+      (KIMI_THINKING_EFFORTS as readonly string[]).includes(e),
+    );
+    // Fallback to default if all filtered out
+    modelEfforts[modelId] = filteredEfforts.length > 0 ? filteredEfforts : [...FALLBACK_EFFORTS];
+
+    // Layer 2: Validate default effort, fallback to 'max' if invalid
+    const def = modelInfo.defaultEffort ?? 'max';
+    modelDefaultEfforts[modelId] = (KIMI_THINKING_EFFORTS as readonly string[]).includes(def)
+      ? def
+      : 'max';
+  }
+
+  // Find current default model from the first provider
+  let currentModel = 'kimi-code/k3';
+  if (data.models['kimi-code/k3']) {
+    currentModel = 'kimi-code/k3';
+  } else if (modelOptions.length > 0) {
+    currentModel = modelOptions[0];
+  }
+
+  return { currentModel, modelOptions, modelDisplayNames, modelEfforts, modelDefaultEfforts };
+}
+
+/** 同步跑 `kimi provider list --json`（冷启动路径，仅无快照时一次）。 */
+function loadSync(): KimiConfigResult {
+  // spawnProcessSync（cross-spawn）而非 execFileSync：kimi 是 npm 全局安装的
+  // .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析（裸名解析到无扩展名的
+  // sh 脚本直接执行失败，.cmd 又 EINVAL）；cross-spawn 与 runner spawn 走
+  // 同一垫片执行路径（posix 直通）。stderr 参与 pipe 以便失败信息可诊断。
+  const res = spawnProcessSync('kimi', ['provider', 'list', '--json'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: KIMI_COMMAND.timeoutMs,
+    maxBuffer: KIMI_COMMAND.maxBuffer,
+    encoding: 'utf-8',
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    const stderr = String(res.stderr ?? '').trim();
+    throw new Error(`kimi exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
+  }
+  return parseKimiProviderList(String(res.stdout ?? ''));
+}
+
+/** 异步跑 `kimi provider list --json`（后台刷新路径，不阻塞事件循环）。 */
+async function loadAsync(): Promise<KimiConfigResult> {
+  // 动态 import：单测 mock 的 platform/spawn 的 spawnProcess 会直接抛错，
+  // 静态 import 会把异步路径带进模块求值；这里只在后台刷新时惰性加载。
+  const { runTextCommandAsync } = await import('../platform/cli-command.js');
+  return parseKimiProviderList(
+    await runTextCommandAsync('kimi', ['provider', 'list', '--json'], KIMI_COMMAND),
+  );
+}
+
+/** 统一 SWR 缓存：同步读快照、后台异步刷新。 */
+const kimiCatalog = new SyncCatalog<KimiConfigResult>({
+  agent: 'kimi',
+  key: () => 'kimi',
+  loadSync: () => loadSync(),
+  loadAsync: () => loadAsync(),
+  fallback: buildDefaultResult,
+  isEmpty: (value) => value.modelOptions.length === 0,
+  ttlMs: KIMI_CONFIG_CACHE_TTL_MS,
+  negativeTtlMs: KIMI_NEGATIVE_CACHE_TTL_MS,
+});
+
+/**
+ * Load Kimi models from `kimi provider list --json`（同步，卡片构建用）。
+ * 命中快照直接返回；TTL 过期返回旧清单并在后台刷新；冷启动才同步 spawn 一次。
+ */
+export function loadKimiConfig(): KimiConfigResult {
+  return kimiCatalog.read();
+}
+
+/** 显式异步加载（warm / 测试用）：刷新快照并返回结果。 */
+export async function loadKimiConfigAsync(): Promise<KimiConfigResult> {
+  return kimiCatalog.refresh();
+}
+
+/** 启动后台预热：消除首次打开 Kimi 配置卡时的同步 spawn。 */
+export function warmKimiConfigCache(): void {
+  kimiCatalog.refresh().catch((err: unknown) => {
+    getLogger().warn(`[kimi-config] warm failed: ${(err as Error).message}`);
+  });
 }

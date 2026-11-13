@@ -671,7 +671,18 @@ Observed symptom: three clicks compact only once, and the other two cards wait f
 
 `pendingConfig` is **a single global draft** (cleared after a `/config <key> <value>` direct write, and the `/config` text command reuses the unsaved draft — existing semantics, unchanged). **Views**, however, are one per card: refreshing only the clicked card leaves the others on a stale view, so what the user reads on an old card and what clicking "Save" actually submits are two different things (2026-10-08; Feishu cards never expire on their own, an old card stays clickable at any time).
 
-Approach: `configCardIds` remembers the config cards that were interacted with (bounded at 5, approximate LRU), and after any edit or save `refreshConfigCards` pushes the draft to each of them. The clicked card goes through `updateCardInPlace` (falling back to sending a new card on failure, so every click gets feedback); sibling cards go through `Bridge.patchCard` (pure best-effort PATCH, dropped from the set on failure) — sibling cards must not use `updateCardInPlace`: once a card has expired it re-sends a new card on every attempt, so the more you click, the more cards appear.
+Approach: `configCardIds` remembers the config cards that were interacted with (bounded at 5, approximate LRU), and after any edit or save `refreshConfigCards` pushes the draft to each of them.
+
+**The callback chain and the card-refresh chain are split (performance constraint)**: Feishu caps a card callback at 3 seconds, so network writes must not enter the callback's `await` chain.
+
+- `config.set` / `config.input`: the apply phase only mutates the in-memory draft; the clicked card is replaced in place by the callback response body's `card: {type:'raw'}` (zero network writes), and sibling cards go to the background render queue.
+- `config.save`: the callback replies as soon as the write and the runtime propagation are done. The agent-switch persistent notice is still sent inside the callback (anchoring contract: no toast on success, `info` toast only on failure, and a failed card refresh must not swallow the notice), but under `CONFIG_SWITCH_NOTICE_BUDGET_MS`: on timeout it is re-sent in the background, and only if that also fails does a text receipt go out. It is the only network write left in the callback — with no budget it reports an already-saved operation as "target server did not respond in time".
+- `src/router/actions/config-render.ts`: a background render queue that is serial and coalesces over `CONFIG_RENDER_DEBOUNCE_MS`. N rapid clicks fan out exactly one PATCH; rendering rebuilds from the **latest** draft so the last state wins; the clicked card (`inlineMessageId`) is skipped, which avoids a duplicate PATCH on the same message (Feishu 230429).
+- **One budget source**: both the inline response body and sibling PATCHes go through `budgetConfigCard` (`enforceCardBudget`). Trimming only one of them gets the other rejected wholesale with Feishu `11310`, and a failed `patchCard` permanently evicts that messageId from `configCardIds` — sibling sync then silently degrades to "only the card you just clicked shows the new value".
+- Sibling cards may only use `Bridge.patchCard` (pure best-effort PATCH, dropped from the set on failure) — never `updateCardInPlace`: once a card has expired it re-sends a new card on every attempt, so the more you click, the more cards appear.
+- **Flush before exit**: `/exit` and `/restart` call `flushConfigRender` with the short `CONFIG_EXIT_FLUSH_BUDGET_MS`, so computed sibling PATCHes are not lost and a slow network cannot hold the process hostage.
+
+Observability (`src/common/config-perf.ts`, log prefix `[perf][config]`) for regression comparisons: `event=callback` (total callback time), `event=apply`, `event=render` (merged/patches), `event=catalog` (`sync_spawn=true` is only allowed on `hit=cold`), `event=open` (prefetch_deferred), `event=flush` (config.* callbacks only).
 
 ### 9.26 Queue Cards Render by Lane Occupant: Compact Holding the Queue Self-Reports and Disables "Run Immediately"
 
@@ -691,7 +702,18 @@ Approach: `configCardIds` remembers the config cards that were interacted with (
 
 **Test anchors**: `tests/anchor/queue-card-arm/queue-card-arm.test.ts` (identity / position / buttons, section `排队卡按 lane 占用者渲染`), `queue-immediate-guards.test.ts` (execution-layer guard).
 
-### 9.27 codex app-server: Notifications Must Be Filtered by Thread Ownership, Sub-agent Threads May Not Pollute the Session Pointer
+### 9.27 Unified SWR Contract for Model Catalogs (a config card never blocks the event loop)
+
+Every agent's config-card model catalog loader (pi/codex/opencode/kimi, plus qoder/codebuddy which already followed this shape) shares one synchronous-read contract: `SyncCatalog` in `src/config/catalog-cache.ts`.
+
+- The synchronous read (the `buildFields` path) **never spawns a CLI because a TTL expired**: a fresh snapshot returns directly; an expired one returns the old snapshot (stale) and fires exactly one background async refresh; a key shift (binary / config dir / file fingerprint changed) returns the fallback instead of the old list and fires the refresh — letting the old identity's catalog masquerade as the new one would render, and even write back, a model id that does not exist for the current binary or config dir. Blocking the event loop does not only stall the config card, it also stalls run cards that are mid-stream PATCH.
+- The background refresh is single-flight (concurrent triggers run once); on failure it keeps the last successful snapshot and applies a negative cache (the dropdown never goes empty).
+- A cold start (no snapshot and no refresh in flight) keeps one synchronous load so the first frame shows the real catalog; with the startup warmers (`warmXxx` in `src/index.ts`) production almost never reaches it.
+- Every read logs an `event=catalog` line: `sync_spawn=true` is allowed only together with `hit=cold` (the single synchronous load of a cold start); `sync_spawn=true` on any other hit value is a regression.
+
+**Template for a new agent**: the catalog loader must be implemented as a `SyncCatalog` (synchronous snapshot read + async `loadAsync`); spawning a CLI on the synchronous path is forbidden.
+
+### 9.28 codex app-server: Notifications Must Be Filtered by Thread Ownership, Sub-agent Threads May Not Pollute the Session Pointer
 
 **Origin (2026-10-09 production)**: after a single run that dispatched work in parallel, every subsequent message in that codex session ended with `cannot resume an unloaded multi-agent v2 sub-agent through its parent`, and `/restart` did not help — the interrupted session could never be resumed.
 

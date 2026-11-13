@@ -647,7 +647,7 @@ export function readCodexSessionContent(
     return { events: [] };
   }
   // subagent rollout 不得当父会话历史返回：子线程 rollout 的
-  // session_meta.session_id 是父 id（§9.27），索引冲突解决在主文件缺失时会让
+  // session_meta.session_id 是父 id（§9.28），索引冲突解决在主文件缺失时会让
   // 子文件占据该 id 的槽位，threadId 检查因等于父 id 而天然通过——list/active
   // 都已过滤（isSubagent），按 id 读取必须同口径，否则「列表没有、active 报
   // false、读内容却成功」三处语义互相矛盾。

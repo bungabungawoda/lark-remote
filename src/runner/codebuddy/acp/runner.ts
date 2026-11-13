@@ -19,7 +19,7 @@
  *   respondApproval 里同时投递答案并结算工具审批。
  * - 私有扩展过滤：`_meta` 带 `codebuddy.ai/teamUpdate`（团队状态）、
  *   `codebuddy.ai/memberEvent`（成员消息）或 `codebuddy.ai/isCompactInternal`
- *   （compact 广播）的事件不进主事件流（§9.27 子线程污染的同源教训）。
+ *   （compact 广播）的事件不进主事件流（§9.28 子线程污染的同源教训）。
  * - /compact 按 opencode 的同步口径处理（prompt 结算即结果；CodeBuddy 的
  *   压缩后台态无类似 kimi wire.jsonl 的观察通道，待真机验证后再加）。
  * - 用量：ACP `usage_update` 的 `_meta.usage` 带每次模型请求的 input/output，

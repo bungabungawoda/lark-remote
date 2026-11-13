@@ -25,14 +25,32 @@ import * as queueActions from './actions/queue-actions.js';
 import * as lsActions from './actions/ls-actions.js';
 import * as orderActions from './actions/order-actions.js';
 import * as configActions from './actions/config-actions.js';
+import {
+  createConfigRenderState,
+  scheduleConfigRender,
+  flushConfigRender,
+} from './actions/config-render.js';
 import * as commandActions from './actions/command-actions.js';
 import type { CardActionPayload, CardActionResponse } from './actions/shared.js';
 import type { ConfigSwitchResult } from './actions/shared.js';
+import { CONFIG_EXIT_FLUSH_BUDGET_MS } from './actions/shared.js';
 export type { CardActionPayload } from './actions/shared.js';
 
 /** Max events to read for auto-resume and /resume cards.
  * Limits events at the read stage so enforceCardBudget rarely needs to truncate.
  * Chosen to be under the 28KB card budget for typical events (~2KB each). */
+
+/**
+ * 可 unref 的 sleep：用于「等一件事做完，但不让进程为了等它而多活着」。
+ * 与 `src/common/sleep.ts` 的差别只在 unref——退出路径上冲刷已落地时，
+ * 普通 setTimeout 会把进程多钉住整个预算。
+ */
+function sleepUnref(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
 
 /**
  * 飞书会把极短间隔连发的多条消息合并成一条换行分隔的消息：用户侧看是两条消息，
@@ -252,7 +270,7 @@ const APPROVAL_ACTION_SPECS: Record<string, ApprovalActionSpec> = {
 export const APPROVAL_ACTION_CMDS: readonly string[] = Object.keys(APPROVAL_ACTION_SPECS);
 
 /**
- * 直返命令：点击后同步返回 toast 给飞书回调，不经队列。
+ * 直返命令：点击后同步返回 toast / card 给飞书回调，不经队列。
  * index.ts 控制层直返清单的唯一来源（勿在别处复制名单）。
  */
 export const DIRECT_RETURN_CMDS: ReadonlySet<string> = new Set([
@@ -260,6 +278,8 @@ export const DIRECT_RETURN_CMDS: ReadonlySet<string> = new Set([
   'order.aliasInput',
   'order.aliasRemove',
   'order.textInput',
+  'config.set',
+  'config.input',
   'config.save',
   ...APPROVAL_ACTION_CMDS,
 ]);
@@ -545,10 +565,20 @@ export class CommandRouter {
   /** /config 卡片编辑暂存区（public：测试直接读取断言，替代 as unknown as）。 */
   pendingConfig: AppConfig | null = null;
   /**
-   * 上一轮 config.save 的延迟收尾（卡片刷新 / 切换卡）。保存响应超出预算时
-   * 收尾转入后台，后续 config.* 动作在串行队列里先等它，避免并发改卡乱序。
+   * /config 后台渲染队列状态（合并窗口 + 串行 tail）。回调链不等待它：
+   * 被点击的卡由回调响应体原地替换，兄弟卡 PATCH 在这里串行合并。
    */
-  configSaveTail: Promise<void> = Promise.resolve();
+  configRenderState = createConfigRenderState();
+  /**
+   * `/c` 打开时目录预取超预算转后台的那条 Promise（链式保留）。
+   * 卡片发送（拿到 messageId 并登记）之后才接上刷卡片：否则预取先落地时，
+   * 新卡还没登记，后台渲染会漏掉它——DSH 新增 provider 后打开 `/c` 看不到新目录。
+   *
+   * 链式而不是覆盖：正常路径上槽位在卡片发出后立刻就被消费，但在发送抛异常等
+   * 失败路径上槽位会跨命令留存，此时新的预取不得把旧的挤掉（挤掉只是少一次补刷，
+   * 但「谁被丢掉」不可预测）。
+   */
+  pendingConfigOpenRefresh: Promise<unknown> | undefined;
   /**
    * 已见过的 /config 卡片 messageId（有界，最近的在最后）。
    *
@@ -705,11 +735,27 @@ export class CommandRouter {
     if (startsWithSlash) {
       const result = await this.executeCommand(guard.clean, ctx);
       if (result) {
-        await this.bridge.sendResult(result, ctx);
+        // 只有 /config 卡需要登记：其他命令保持两参数调用，避免改变
+        // 既有调用形式（测试与代调用方均按两参数断言）。
+        if (result.trackConfigCard) {
+          await this.bridge.sendResult(result, ctx, {
+            onCardSent: (messageId) => {
+              // /config 卡片发送成功后即登记：deferred 目录刷新（cmdConfig 超预算
+              // 转后台的预取）与后续 config.* 兄弟卡扇出才能覆盖这张刚打开的卡。
+              this.rememberConfigCard(messageId);
+            },
+          });
+          this.consumeConfigOpenRefresh(ctx);
+        } else {
+          await this.bridge.sendResult(result, ctx);
+        }
       }
       if (this.pendingExit) {
         // 干净退出前冲刷装配器窗口内未提交的入站 turn，避免静默期窗口内的内容丢失。
         await this.flushInbound?.();
+        // 后台渲染队列里的兄弟卡 PATCH 同样是未完成的工作：直接退出会让其它
+        // 配置卡停在旧草稿上。给一个短预算，网络慢就不等（进程要能退出去）。
+        await Promise.race([this.flushConfigRender(), sleepUnref(CONFIG_EXIT_FLUSH_BUDGET_MS)]);
         this.exitHandler();
       }
       return result;
@@ -1373,23 +1419,66 @@ export class CommandRouter {
   }
 
   /**
-   * 把一次字段变更交给当前 agent 的 config builder（处理 provider→model 这类
-   * 依赖关系），逐条写进草稿，再把草稿刷到所有配置卡。
-   * `config.set`（下拉）与 `config.input`（输入框提交）共用同一套应用逻辑。
+   * 把当前草稿刷到所有已知 config 卡片上（后台渲染队列调用）。
+   * 被点击的卡由回调响应体的 `card` 字段原地替换，这里只刷兄弟卡；
+   * `excludeMessageId` 跳过它，避免同消息重复 PATCH 触发飞书 230429。
+   * 返回各段耗时与成功 PATCH 数，供 `event=render` 埋点。
    */
-  async applyConfigFieldChange(key: string, newValue: string, ctx: CommandContext): Promise<void> {
-    return configActions.applyConfigFieldChange(this, key, newValue, ctx);
+  async refreshConfigCards(excludeMessageId?: string): Promise<configActions.ConfigRefreshStats> {
+    return configActions.refreshConfigCards(this, excludeMessageId);
+  }
+
+  /** 调度后台渲染（同步返回，不等待任何网络写）。 */
+  scheduleConfigRender(req: import('./actions/config-render.js').ConfigRenderRequest): void {
+    scheduleConfigRender(this, req);
+  }
+
+  /** 测试/关停用：冲刷合并窗口并等待后台渲染队列排空。 */
+  async flushConfigRender(): Promise<void> {
+    return flushConfigRender(this);
   }
 
   /**
-   * 把当前草稿刷到所有已知 config 卡片上（含本次点击的那张）。
-   *
-   * 被点击的那张走 `updateCardInPlace`（失败 fallback 发新卡，保证点击必有
-   * 反馈）；其余兄弟卡走 `patchCard`（纯 best-effort，失败即从集合剔除，不再
-   * 重复打无效 PATCH，也不会因为卡片过期而反复补发新卡）。
+   * 登记一次 `/c` 的后台目录预取：预取落地且卡片已发出后再补刷一次。
+   * 多次登记链在一起，不会互相覆盖。
    */
-  async refreshConfigCards(ctx: CommandContext): Promise<void> {
-    return configActions.refreshConfigCards(this, ctx);
+  trackConfigOpenRefresh(prefetch: Promise<unknown>): void {
+    const previous = this.pendingConfigOpenRefresh;
+    const current = prefetch.catch((err: unknown) => {
+      getLogger().warn(`[router] /config 后台目录预取失败: ${(err as Error).message}`);
+    });
+    this.pendingConfigOpenRefresh = previous ? Promise.all([previous, current]) : current;
+  }
+
+  /**
+   * 只在 `/config` 卡片发出后消费预取槽位：别的命令的结果不代表面板已就位，
+   * 提前消费会用无上下文命令的时机触发一次空刷。
+   */
+  private consumeConfigOpenRefresh(ctx: CommandContext): void {
+    const openRefresh = this.pendingConfigOpenRefresh;
+    if (!openRefresh) return;
+    this.pendingConfigOpenRefresh = undefined;
+    // 预取落地后再刷一次：新卡此时已登记，能拿到最新目录。
+    void openRefresh.then(() => {
+      this.scheduleConfigRender({
+        ctx,
+        refreshCatalogs: false,
+        skipRemember: true,
+      });
+    });
+  }
+
+  /**
+   * 把一次字段变更交给当前 agent 的 config builder（处理 provider→model 这类
+   * 依赖关系），逐条写进草稿。`config.set`（下拉）与 `config.input`（输入框提交）
+   * 共用同一套应用逻辑。apply 段只做内存操作，卡片由响应体 + 后台队列更新。
+   */
+  async applyConfigFieldChange(
+    key: string,
+    newValue: string,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    return configActions.applyConfigFieldChange(this, key, newValue, ctx);
   }
 
   /**

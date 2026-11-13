@@ -291,6 +291,13 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 
 > `/cd`、`/ws use`、`/ls` 点击切换目录时都会清空 session（开新对话，§9.1），因为 `--resume` 会恢复 agent 记忆中的旧 cwd，跨目录续 session 会导致文件读写错乱。要续旧 session 请先切回对应目录再 `/resume`。Claude 会话内 `EnterWorktree` 会 relocate 到 worktree，`/s` 显示「会话目录」告知实际位置，`/new` 可回工作目录。
 
+#### `/config`：配置卡片
+
+- 卡片上的下拉与输入只改**暂存草稿**，点「💾 保存所有修改」才落盘；再次 `/config` 打开卡片沿用同一份草稿。
+- 草稿会同步到最近交互过的每张配置卡，避免旧卡上看到的值与点保存实际提交的值不一致。
+- 想跳过卡片直接改：`/config <key> <value>` 立即写盘并生效，例如 `/config claude.model haiku`、`/config pi.thinking max`。`pi.` / `codex.` / `opencode.` / `kimi.` 前缀会自动落到 `agents.<name>.` 下；写成 `agents.pi.model` 这类全路径同样有效。
+- 模型下拉很长时（provider 常列出上百个模型），卡片按飞书组件预算裁剪，卡片顶部会提示「📜 还有 N 个选项未显示」；被裁掉的模型仍可用上面的直接写盘方式设置。
+
 #### `/stop`：终止进程
 
 `/stop` 走独立控制通道，不会排在当前 Claude run 后等待。它调用

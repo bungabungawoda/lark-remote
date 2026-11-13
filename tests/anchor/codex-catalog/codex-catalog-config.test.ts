@@ -409,9 +409,13 @@ describe('codex catalog config', () => {
 
     fs.writeFileSync(modelsPath, makeCatalog([makeModel('deepseek-v4-pro', [{ effort: 'low' }])]));
     fs.utimesSync(modelsPath, t2, t2);
+    // SWR 语义：键漂移（models.json 指纹变了）后同步读**不得**返回旧清单——
+    // 那是另一个身份的内容；也不能同步 spawn（事件循环保护）。所以回 fallback
+    // （caller 落回 currentModel/静态清单），真实清单由后台刷新落地
+    // （覆盖见 codex-config-async.test.ts）。
     const second = getCodexCatalogModels();
-    expect(second.map((m) => m.slug)).toEqual(['deepseek-v4-pro']);
-    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+    expect(second).toEqual([]);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
   it('test_anchor_relative_model_catalog_json_resolved_against_config_dir', () => {

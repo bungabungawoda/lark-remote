@@ -70,17 +70,24 @@ describe('opencode execSync 必须带 TTL 缓存 (anchor)', () => {
   });
 
   /**
-   * 回归锁定：TTL 过期后必须重新 execSync（模型列表热更新），防止缓存永不过期。
+   * 回归锁定（SWR 语义）：TTL 过期后同步读**不得**再 execSync（事件循环保护），
+   * 而是返回旧快照 + 后台异步刷新；刷新落地后清单热更新。
    */
-  it('probe: TTL 过期后重新 execSync', () => {
+  it('probe: TTL 过期后同步读不 execSync，返回旧快照 + 后台刷新', async () => {
     vi.useFakeTimers();
     try {
       mockExecSync.mockReturnValue({ status: 0, stdout: FAKE_OUTPUT, stderr: '' });
       loadOpencodeConfig();
       loadOpencodeConfig(); // 命中缓存
       vi.advanceTimersByTime(61_000);
-      loadOpencodeConfig();
-      expect(mockExecSync).toHaveBeenCalledTimes(2);
+      // TTL 过期：同步读返回旧快照，不再 execSync（这是本次优化的核心锚点）
+      const stale = loadOpencodeConfig();
+      expect(mockExecSync).toHaveBeenCalledTimes(1);
+      expect(stale.modelOptions('opencode')).toEqual(['big-pickle']);
+
+      // 后台刷新走异步路径（动态 import runTextCommandAsync），此处只断言
+      // 同步读不阻塞；刷新行为的覆盖见 src/config/opencode-config.test.ts。
+      await vi.runAllTimersAsync();
     } finally {
       vi.useRealTimers();
     }

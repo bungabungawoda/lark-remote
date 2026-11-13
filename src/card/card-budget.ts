@@ -162,6 +162,15 @@ interface CardElementNode {
   text?: CardText;
   elements?: CardElementNode[];
   columns?: { elements?: CardElementNode[] }[];
+  /** select_static 的可选项：每项带一个 `plain_text`，是组件预算的大户。 */
+  options?: CardSelectOption[];
+  /** 当前选中项（value）；裁剪时必须保留，否则下拉显示成占位符。 */
+  initial_option?: string;
+}
+
+interface CardSelectOption {
+  text?: CardText;
+  value?: string;
 }
 
 interface CardNode {
@@ -317,7 +326,9 @@ type BudgetResult = {
  *   阶段2 限制面板数量（删除最老，maxEventPanels）
  *   阶段3 丢弃全部面板，保留骨架（header/usage/按钮）+ 省略提示
  *   阶段4 截断剩余顶层 div 文本
- *   阶段5 最终兜底 minimal card（骨架本身已超限的病理场景）
+ *   阶段5 裁下拉选项（最长的先裁，保留选中项与全部控件行）
+ *   阶段6 兜底：丢弃最旧的顶层元素（配置卡以外的行式卡片）
+ *   阶段7 最终兜底 minimal card（骨架本身已超限的病理场景）
  */
 /**
  * 字节预算降级各阶段共享的可变状态。
@@ -331,7 +342,10 @@ interface ByteBudgetContext {
   truncated: CardNode;
   elements: CardElementNode[];
   reasons: string[];
+  /** 被整块丢弃的面板 / 顶层元素数（会渲染成「还有 N 个事件未显示」）。 */
   omitted: number;
+  /** 被裁掉的下拉选项数（控件行保留，只收缩可选项）。 */
+  optionsTrimmed: number;
   modifications: number;
   textTruncations: number;
   maxEventPanels: number;
@@ -355,6 +369,7 @@ function makeByteBudgetContext(
     elements: truncated.body?.elements ?? [],
     reasons: [],
     omitted: 0,
+    optionsTrimmed: 0,
     modifications: 0,
     textTruncations: 0,
     maxEventPanels,
@@ -389,11 +404,13 @@ function byteBudgetElementsWithin(ctx: ByteBudgetContext): boolean {
  * 元素总数或组件总数是否超预算——把「裁剪后要补的省略提示」算进去。
  *
  * 提示本身占 1 个元素 / 2 个组件（div + 文本）；只按裸数量裁到恰好 MAX，
- * 补提示后就会越界，所有裁剪/判定共用这一个口径。
+ * 补提示后就会越界，所有裁剪/判定共用这一个口径。提示对「删了面板/元素」与
+ * 「裁了下拉选项」两种情况都要预留（任一来源非空都会写提示）。
  */
 function elementBudgetExceeded(ctx: ByteBudgetContext): boolean {
-  const hintElements = ctx.omitted > 0 ? 1 : 0;
-  const hintComponents = ctx.omitted > 0 ? 2 : 0;
+  const hasHint = ctx.omitted > 0 || ctx.optionsTrimmed > 0;
+  const hintElements = hasHint ? 1 : 0;
+  const hintComponents = hasHint ? 2 : 0;
   return (
     countCardElements(ctx.truncated) + hintElements > MAX_CARD_ELEMENTS ||
     countCardComponents(ctx.truncated) + hintComponents > MAX_CARD_COMPONENTS
@@ -424,7 +441,7 @@ function byteBudgetTryFinish(
   wasTruncated: boolean,
 ): BudgetResult | undefined {
   if (!byteBudgetFits(ctx)) return undefined;
-  insertOmittedHint(ctx.elements, ctx.omitted, ctx.truncationHint);
+  insertOmittedHint(ctx);
   return byteBudgetDone(ctx, wasTruncated);
 }
 
@@ -483,10 +500,54 @@ function truncateTopLevelDivs(ctx: ByteBudgetContext): void {
   }
 }
 
-// ========== 阶段4.5：元素数兜底（无面板可删的元素超限） ==========
-// 阶段1-4 只会裁内容/删面板；元素超限且无面板时在此按序丢弃最旧的顶层
-// 元素直到达标（与 table/panel 的「删最旧、留最新」口径一致，尾部操作
-// 按钮保留）。留 ≥3 个元素兜底，仍不达标则交给阶段5 的最小卡。
+// ========== 阶段5：裁下拉选项（最长列表先裁） ==========
+// 配置卡的组件数几乎全在 select 的选项上：`pi --list-models` 单个 provider 就能
+// 列出上百个模型，每个选项占 1 个 `plain_text` 节点。整行丢弃会把控件一起删掉
+// （默认 Agent 选择器曾因此从卡片上消失，只留一句「还有 N 个事件未显示」）；
+// 裁选项只收缩可选项，行结构、标签与回调全部保留。
+function trimSelectOptions(ctx: ByteBudgetContext): void {
+  const selects = collectSelectNodes(ctx.truncated).sort(
+    (a, b) => (b.options?.length ?? 0) - (a.options?.length ?? 0),
+  );
+  for (const sel of selects) {
+    while (elementBudgetExceeded(ctx) && dropOneSelectOption(sel)) ctx.optionsTrimmed++;
+  }
+  if (ctx.optionsTrimmed > 0) ctx.reasons.push('select_options_trimmed');
+}
+
+/** 收集整卡的下拉（含 column_set 内嵌），按选项数降序裁。 */
+function collectSelectNodes(card: CardNode): CardElementNode[] {
+  const found: CardElementNode[] = [];
+  walkCardElements(card.body?.elements ?? [], (el) => {
+    if (el.tag === 'select_static' && Array.isArray(el.options) && el.options.length > 0) {
+      found.push(el);
+    }
+  });
+  return found;
+}
+
+/**
+ * 删一个选项：从尾部删，但绝不删选中项（选中项在尾部时改删它前一个）。
+ *
+ * 保留原顺序而不是把选中项提到队首：选项顺序（provider 分组/字母序）本身是
+ * 信息，裁剪不该顺手重排。
+ */
+function dropOneSelectOption(sel: CardElementNode): boolean {
+  const options = sel.options;
+  if (!options || options.length <= 1) return false;
+  const lastIndex = options.length - 1;
+  if (options[lastIndex].value === sel.initial_option && lastIndex > 0) {
+    options.splice(lastIndex - 1, 1);
+  } else {
+    options.pop();
+  }
+  return true;
+}
+
+// ========== 阶段6：元素数兜底（无面板可删的元素超限） ==========
+// 阶段1-5 只会裁内容/删面板/收缩下拉；元素超限且这些手段都不够时，在此按序
+// 丢弃最旧的顶层元素直到达标（与 table/panel 的「删最旧、留最新」口径一致，
+// 尾部操作按钮保留）。留 ≥3 个元素兜底，仍不达标则交给阶段7 的最小卡。
 //
 // 达标判定必须用 `elementBudgetExceeded`（含省略提示预留位）：只按裸元素
 // 数裁到恰好 MAX 时，补提示后变成 MAX+1，判定不达标且本阶段不再重试，
@@ -503,7 +564,7 @@ function dropExcessElements(ctx: ByteBudgetContext): BudgetResult | undefined {
   return undefined;
 }
 
-// ========== 阶段5：最终兜底（原 extreme_fallback） ==========
+// ========== 阶段7：最终兜底（原 extreme_fallback） ==========
 function byteBudgetMinimalCard(ctx: ByteBudgetContext): BudgetResult {
   const minimalCard = cardWithHeader({
     template: 'orange',
@@ -548,6 +609,10 @@ function enforceByteBudget(
   result = byteBudgetTryFinish(ctx, true);
   if (result) return result;
 
+  trimSelectOptions(ctx);
+  result = byteBudgetTryFinish(ctx, true);
+  if (result) return result;
+
   result = dropExcessElements(ctx);
   if (result) return result;
 
@@ -555,18 +620,22 @@ function enforceByteBudget(
 }
 
 /**
- * 在卡片头部插入「N 个事件未显示」提示（仅在有面板被移除时）。
+ * 在卡片头部插入一条「省略了什么」的提示；没有任何省略时什么都不插。
+ *
+ * 事件口径（面板/元素被整块丢弃）与选项口径（下拉列表被收缩）分开命名：
+ * 配置卡上没有「事件」，把裁掉的选项写成「事件未显示」会让人以为会话丢内容。
  */
-function insertOmittedHint(
-  elements: CardElementNode[],
-  omitted: number,
-  truncationHint: string,
-): void {
-  if (omitted <= 0) return;
-  elements.unshift({
-    tag: 'div',
-    text: { tag: 'lark_md', content: truncationHint.replace('{count}', String(omitted)) },
-  });
+function insertOmittedHint(ctx: ByteBudgetContext): void {
+  const content = omittedHintContent(ctx);
+  if (!content) return;
+  ctx.elements.unshift({ tag: 'div', text: { tag: 'lark_md', content } });
+}
+
+function omittedHintContent(ctx: ByteBudgetContext): string | undefined {
+  const optionNote = ctx.optionsTrimmed > 0 ? `${ctx.optionsTrimmed} 个选项` : '';
+  if (ctx.omitted <= 0) return optionNote ? `📜 还有 ${optionNote}未显示` : undefined;
+  const base = ctx.truncationHint.replace('{count}', String(ctx.omitted));
+  return optionNote ? `${base}（另有 ${optionNote}未显示）` : base;
 }
 
 /**

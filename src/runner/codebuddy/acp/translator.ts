@@ -9,7 +9,7 @@
  * 无 turn_diff 快照。
  *
  * CodeBuddy 私有扩展（Agent Teams 成员消息/团队状态）不在这里处理：runner 的
- * handleNotification 先按 `_meta['codebuddy.ai/*']` 过滤（§9.27 同源教训——
+ * handleNotification 先按 `_meta['codebuddy.ai/*']` 过滤（§9.28 同源教训——
  * 子线程/成员事件不得污染主会话时间线），进到 translator 的就是标准 ACP 事件。
  *
  * 工具事件：基类 rawInput 归一化 + kind→常用工具名映射；tool_result 内容从
