@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-11-13
+
+### 性能
+
+- **配置卡回调链零网络写**：`config.set` / `config.input` 只改内存草稿，被点击的卡由回调响应体原地替换，兄弟卡交给后台串行渲染队列（合并窗口内连点只扇出一次 PATCH）；`config.save` 仅保留切换 agent 的持久化通知，并带超时预算，超时转后台补发
+- **模型目录统一 SWR 同步读**：pi / codex / opencode / kimi 的配置卡模型目录共用 `SyncCatalog`，TTL 过期不再同步 spawn CLI，旧快照立即返回并后台刷新；键漂移（binary / 配置目录 / 文件指纹变化）不返回旧清单，避免旧身份的模型被写回
+- **`/config` 打开去阻塞**：目录预取进后台队列，配合启动预热，首帧直接展示真实清单
+
+### 修复
+
+- **卡片预算口径单源**：inline 响应体与兄弟卡 PATCH 统一走 `enforceCardBudget`；超限先裁下拉选项、选中项必留，最后才丢整行，避免误删导航控件
+- **`/exit`、`/restart` 前冲刷待发 PATCH**：带短预算，不丢已算好的兄弟卡刷新，也不阻住进程
+- **测试取文还原 markdown 反斜杠转义**：修 Windows 上卡片文本断言假红；隔离 config 打开路径锚点的探针延迟
+
+### 文档
+
+- 中英 `design.md` 补齐配置卡回调链、SWR 契约与全链路埋点说明；`cardkit-layout.md` 补充组件预算裁剪顺序；`usage.md` 补充 `/config` 卡片与直接写盘用法
+
 ## [0.7.1] - 2026-11-13
 
 ### 文档
