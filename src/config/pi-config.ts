@@ -19,8 +19,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { getLogger } from '../logger/index.js';
 import { runTextCommandAsync, runTextCommandSync } from '../platform/cli-command.js';
+import { SyncCatalog } from './catalog-cache.js';
 
 /** pi CLI 名（cross-spawn 负责 win32 .cmd 垫片解析）。 */
 const PI_BINARY = 'pi';
@@ -149,17 +149,6 @@ export function parsePiListModels(stdout: string): PiListedModel[] {
 // `pi --list-models` 调用与缓存
 // ---------------------------------------------------------------------------
 
-interface PiListCacheEntry {
-  key: string;
-  models: PiListedModel[];
-  ts: number;
-  failed: boolean;
-}
-
-let piListCache: PiListCacheEntry | null = null;
-/** 同 key 的并发加载只 spawn 一次（卡片连开、warm 与显式调用撞车时）。 */
-const piListInFlight = new Map<string, Promise<PiListedModel[]>>();
-
 /**
  * 缓存键：包含命令会读的两个文件的指纹。
  *
@@ -184,20 +173,6 @@ function computePiListKey(): string {
   ].join('\u0000');
 }
 
-/** 读取有效缓存（含负缓存 TTL）；命中返回模型，否则 undefined。 */
-function readCachedPiList(key: string): PiListedModel[] | undefined {
-  if (piListCache && piListCache.key === key) {
-    const ttl = piListCache.failed ? PI_NEGATIVE_TTL_MS : PI_CACHE_TTL_MS;
-    if (Date.now() - piListCache.ts < ttl) return piListCache.models;
-  }
-  return undefined;
-}
-
-function storePiList(key: string, models: PiListedModel[]): PiListedModel[] {
-  piListCache = { key, models, ts: Date.now(), failed: models.length === 0 };
-  return models;
-}
-
 /** `pi --list-models` 的同步输出；命令名进错误信息，stderr 片段随错误带出。 */
 function runPiListSync(): string {
   return runTextCommandSync(PI_BINARY, ['--list-models'], PI_COMMAND);
@@ -209,55 +184,36 @@ function runPiListAsync(): Promise<string> {
 }
 
 /**
+ * 统一 SWR 缓存：同步读快照、后台异步刷新。TTL 过期不再同步 spawn CLI，
+ * 事件循环不再被 pi 的 166–244ms 阻塞（其它 agent 的 run 卡流式 patch 一起受益）。
+ */
+const piListCatalog = new SyncCatalog<PiListedModel[]>({
+  agent: 'pi',
+  key: computePiListKey,
+  loadSync: () => parsePiListModels(runPiListSync()),
+  loadAsync: async () => parsePiListModels(await runPiListAsync()),
+  fallback: () => [],
+  isEmpty: (models) => models.length === 0,
+  ttlMs: PI_CACHE_TTL_MS,
+  negativeTtlMs: PI_NEGATIVE_TTL_MS,
+});
+
+/**
  * pi 当前列出的模型（同步）。
  *
- * 缓存命中直接返回；若有一个后台异步加载在途，则不在事件循环上阻塞，直接返回
- * `[]` 交给调用方 fallback（与 codex-config 的同步/异步分工一致）。否则同步
- * spawn 一次——实测 166–244ms，远低于 codex 的 8s，值得让首次打开卡片就拿到
- * 真实清单而不是空列表。
+ * 同步路径只读快照：命中直接返回；TTL 过期返回旧快照并在后台刷新；刷新在途
+ * 且无快照时返回空清单交给调用方 fallback。冷启动（无快照）保留一次同步加载，
+ * 保证首帧就有真实清单；启动 `warmPiListCache` 后生产路径几乎不会走到这里。
  */
 export function loadPiListedModels(): PiListedModel[] {
-  const key = computePiListKey();
-  const cached = readCachedPiList(key);
-  if (cached !== undefined) return cached;
-  if (piListInFlight.has(key)) return [];
-
-  try {
-    return storePiList(key, parsePiListModels(runPiListSync()));
-  } catch (err) {
-    getLogger().warn(`[pi-config] models unavailable for binary "pi": ${(err as Error).message}`);
-    return storePiList(key, []);
-  }
+  return piListCatalog.read();
 }
 
 /**
- * 异步加载模型清单（execFile 语义，不阻塞事件循环），写入与同步路径共享的
- * 缓存。按缓存键复用 in-flight Promise：并发调用（多个 warm / 显式调用）只
- * spawn 一次。
+ * 显式异步加载：单飞刷新快照并返回结果（warm / 测试用）。
  */
 export async function loadPiListedModelsAsync(): Promise<PiListedModel[]> {
-  const key = computePiListKey();
-  const cached = readCachedPiList(key);
-  if (cached !== undefined) return cached;
-
-  const inFlight = piListInFlight.get(key);
-  if (inFlight) return inFlight;
-
-  const p = (async (): Promise<PiListedModel[]> => {
-    try {
-      return storePiList(key, parsePiListModels(await runPiListAsync()));
-    } catch (err) {
-      getLogger().warn(`[pi-config] models unavailable for binary "pi": ${(err as Error).message}`);
-      return storePiList(key, []);
-    }
-  })();
-
-  piListInFlight.set(key, p);
-  try {
-    return await p;
-  } finally {
-    piListInFlight.delete(key);
-  }
+  return piListCatalog.refresh();
 }
 
 /**
@@ -265,13 +221,12 @@ export async function loadPiListedModelsAsync(): Promise<PiListedModel[]> {
  * fire-and-forget；失败落负缓存，同步路径照常 fallback。
  */
 export function warmPiListCache(): void {
-  void loadPiListedModelsAsync();
+  piListCatalog.warm();
 }
 
 /** Test utility: clear the cache and any in-flight loads. */
 export function _invalidatePiListCacheForTest(): void {
-  piListCache = null;
-  piListInFlight.clear();
+  piListCatalog.invalidate();
 }
 
 // ---------------------------------------------------------------------------

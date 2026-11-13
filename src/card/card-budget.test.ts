@@ -846,6 +846,139 @@ describe('enforceCardBudget element-total budget', () => {
   });
 });
 
+/**
+ * 下拉选项预算：配置卡的组件数几乎全在 select 选项上。
+ *
+ * 真机事故形态：`pi --list-models` 给单个 provider 列出 118 个模型，配置卡
+ * 组件数 192 越过 190 的保守预算，元素兜底阶段把最前面的两个顶层元素（分区标题
+ * 与「默认 Agent」选择器）整块删掉，还复用了事件口径的提示，用户看到的是
+ * 「📜 还有 2 个事件未显示」。这里锁四条：裁选项不删行、选中项必留、提示用选项
+ * 口径、与面板丢弃并存时两种口径都写。
+ */
+describe('enforceCardBudget select-option budget', () => {
+  function selectRow(label: string, optionCount: number, selected: string): object {
+    return {
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 2,
+          vertical_align: 'center',
+          elements: [{ tag: 'div', text: { tag: 'lark_md', content: label } }],
+        },
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 3,
+          vertical_align: 'center',
+          elements: [
+            {
+              tag: 'select_static',
+              placeholder: { tag: 'plain_text', content: '请选择' },
+              options: Array.from({ length: optionCount }, (_, i) => ({
+                text: { tag: 'plain_text', content: `model-${i}` },
+                value: `model-${i}`,
+              })),
+              initial_option: selected,
+              behaviors: [
+                { type: 'callback', value: { cmd: 'config.set', key: 'agents.pi.model' } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function configCard(elements: object[]): object {
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { title: { tag: 'plain_text', content: '⚙️ 系统配置' }, template: 'blue' },
+      body: { elements },
+    };
+  }
+
+  const saveButton = (): object => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: '💾 保存所有修改' },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { cmd: 'config.save' } }],
+  });
+
+  it('裁下拉选项而不是整行删除，控件与分区标题全部保留', () => {
+    const input = configCard([
+      { tag: 'div', text: { tag: 'lark_md', content: '**🤖 Pi**' } },
+      selectRow('默认 Agent', 8, 'model-3'),
+      selectRow('使用模型', 250, 'model-40'),
+      { tag: 'hr' },
+      saveButton(),
+    ]);
+    expect(countCardComponents(input)).toBeGreaterThan(MAX_CARD_COMPONENTS);
+
+    const result = enforceCardBudget(input);
+    const card = result.card as { body: { elements: object[] } };
+    const json = JSON.stringify(card);
+
+    expect(result.reason).toBe('select_options_trimmed');
+    expect(countCardComponents(card)).toBeLessThanOrEqual(MAX_CARD_COMPONENTS);
+    // 两行都还在（整行删除时这里会少了「默认 Agent」与分区标题）
+    expect(json).toContain('默认 Agent');
+    expect(json).toContain('使用模型');
+    expect(json).toContain('**🤖 Pi**');
+    // 选中的模型必须留在选项里，否则下拉会回落成占位符
+    expect(json).toContain('"value":"model-40"');
+    // 提示用选项口径——配置卡上没有「事件」
+    expect(json).toContain('个选项未显示');
+    expect(json).not.toContain('事件未显示');
+    // 尾部操作按钮保留
+    expect(json).toContain('💾 保存所有修改');
+  });
+
+  it('选中项在列表尾部时也不删它（删前一个，保住原顺序）', () => {
+    const input = configCard([
+      selectRow('使用模型', 240, 'model-239'),
+      { tag: 'div', text: { tag: 'lark_md', content: '尾巴' } },
+      saveButton(),
+    ]);
+
+    const result = enforceCardBudget(input);
+    const json = JSON.stringify(result.card);
+
+    expect(result.reason).toBe('select_options_trimmed');
+    expect(json).toContain('"value":"model-239"');
+    expect(countCardComponents(result.card)).toBeLessThanOrEqual(MAX_CARD_COMPONENTS);
+  });
+
+  it('面板丢弃与选项裁剪同时发生 → 两种口径写在同一条提示里', () => {
+    // 面板正文撑爆字节预算才会走字节路径（面板丢弃发生在那条路径上），
+    // 弃完面板后组件数仍被下拉撑爆，于是同一张卡既丢面板又裁选项。
+    const input = configCard([
+      {
+        tag: 'collapsible_panel',
+        expanded: false,
+        header: { title: { tag: 'markdown', content: '💭 思考' } },
+        elements: [
+          { tag: 'div', text: { tag: 'lark_md', content: syntheticPayload(20_000, 'PANEL') } },
+        ],
+      },
+      selectRow('使用模型', 250, 'model-0'),
+      saveButton(),
+    ]);
+
+    const result = enforceCardBudget(input, { maxEventPanels: 0 });
+    const json = JSON.stringify(result.card);
+
+    expect(result.reason).toContain('event_count_limited');
+    expect(result.reason).toContain('select_options_trimmed');
+    expect(json).toContain('个事件未显示');
+    expect(json).toContain('个选项未显示');
+    expect(countCardComponents(result.card)).toBeLessThanOrEqual(MAX_CARD_COMPONENTS);
+  });
+});
+
 describe('countCardComponents', () => {
   it('counts every tagged node, including columns and select option texts', () => {
     const input = {

@@ -181,6 +181,12 @@ On the implementation side: `MAX_CARD_ELEMENTS = 90` (10% below the measured 99)
 `MAX_CARD_COMPONENTS = 190` (5% below the measured 200),
 `countCardElements()` / `countCardComponents()` in `src/card/card-budget.ts`,
 plus the quantity-trimming branch of `enforceCardBudget()` (either budget being
-over triggers trimming); the run card enforces both budgets via
-`withinRunCardBudget()` in `run-renderer.ts`, and its normal path drops the
-oldest steps to stay inside the element budget (`selectVisibleGroups()`).
+over triggers trimming): select options are trimmed first (longest list first,
+from the tail, never dropping the selected option), and whole rows are dropped
+only if that is not enough. **The order is not negotiable** — a config card's
+component count lives almost entirely in select options, so dropping rows first
+deletes navigation controls such as `default Agent` and the provider picker and
+leaves only a hint that is meaningless here ("N events not shown"). The run card
+enforces both budgets via `withinRunCardBudget()` in `run-renderer.ts`, and its
+normal path drops the oldest steps to stay inside the element budget
+(`selectVisibleGroups()`).

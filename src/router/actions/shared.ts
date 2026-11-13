@@ -194,12 +194,35 @@ export function applyNewSession(
 export const MAX_CONFIG_CARDS = 5;
 
 /**
- * config.save 回调响应的预算（ms）。飞书要求卡片回调 3 秒内响应；扣掉
- * message-handlers 的 flush 等待与网络往返，router 侧最多占 1.5s。超预算时
- * 保存已经落盘，卡片刷新与切换卡转入后台继续；下一个 config.* 动作会先等
- * 它收尾（`configSaveTail`），保持既有的串行语义。
+ * config 回调响应的目标预算（ms）。飞书要求卡片回调 3 秒内响应；扣掉
+ * message-handlers 的 flush 等待与网络往返，router 侧最多占 1.5s。
+ *
+ * 卡片动作把网络写全部移进后台渲染队列后，这个数只用于埋点里的
+ * `budget_exceeded` 标记（验证回调链里是否还有意外阻塞），不再用于
+ * `Promise.race` 抢占响应——抢占会留下一个仍在后台跑的 tail 传染后续动作。
  */
-export const CONFIG_SAVE_RESPONSE_BUDGET_MS = 1_500;
+export const CONFIG_CALLBACK_BUDGET_MS = 1_500;
+
+/** 后台渲染队列的合并窗口（ms）：连点期间的多次草稿变更合并成一次 PATCH 扇出。 */
+export const CONFIG_RENDER_DEBOUNCE_MS = 250;
+
+/** `/c` 打开时等待动态目录预取的上限（ms）：超时立即用缓存/兜底清单出卡。 */
+export const CONFIG_OPEN_PREFETCH_BUDGET_MS = 200;
+
+/**
+ * `config.save` 切换 Agent 的持久化通知在回调内发送的上限（ms）。
+ *
+ * 这条通知是本回调里唯一的网络写（锚定契约要求它是持久消息，不走后台渲染
+ * 队列）。没有预算时，网络长尾会把回调拖过飞书 3 秒上限——而写盘已经完成，
+ * 用户看到的是「超时未响应」。超时后通知转后台补发（见 sendSwitchNotice）。
+ */
+export const CONFIG_SWITCH_NOTICE_BUDGET_MS = 1_200;
+
+/**
+ * 退出前冲刷后台渲染队列的上限（ms）。`/exit`、`/restart` 之前不该丢掉已经
+ * 算好的兄弟卡 PATCH，但进程必须能退出去——网络卡住时不等。
+ */
+export const CONFIG_EXIT_FLUSH_BUDGET_MS = 800;
 
 export const APPROVAL_AGENT_KINDS: string[] = ['codex', 'kimi', 'opencode'];
 

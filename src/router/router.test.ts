@@ -28,7 +28,11 @@ import {
   createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
 import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
-import { collectCallbackCmds, expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import {
+  collectCallbackCmds,
+  collectCardTexts,
+  expectNoV1ActionContainer,
+} from '../../tests/lib/card-view.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { currentPlatform, isWin32 } from '../platform/select.js';
@@ -121,19 +125,6 @@ function findEmptyElementsViolations(obj: unknown, path: string): string[] {
     violations.push(...findEmptyElementsViolations(v, `${path}.${k}`));
   }
   return violations;
-}
-
-function collectCardTexts(elements: TestCardElement[]): string[] {
-  const out: string[] = [];
-  for (const el of elements) {
-    if (el.text?.content) out.push(el.text.content);
-    for (const col of el.columns ?? []) {
-      for (const child of col.elements ?? []) {
-        if (child.text?.content) out.push(child.text.content);
-      }
-    }
-  }
-  return out;
 }
 
 /** 递归查找 label 完全匹配的 button，返回其 behaviors[0].value（用于断言按钮目标）。 */
@@ -1197,7 +1188,7 @@ describe('CommandRouter', () => {
     // 新布局：1(cwd) + 3(sort指示: hr+column_set+hr) + 5*3(行) - 1(末行 hr 被 pop) + 1(hr) + 1(分页column_set) = 19
     expect(elements.length).toBeLessThanOrEqual(60);
 
-    const texts = collectCardTexts(elements);
+    const texts = collectCardTexts({ body: { elements } });
     // 第一页只渲染 ws00..ws04，ws05 不得出现
     expect(texts.some((t) => t.includes('ws00'))).toBe(true);
     expect(texts.some((t) => t.includes('ws04'))).toBe(true);
@@ -1228,7 +1219,7 @@ describe('CommandRouter', () => {
     // Default sort is recent — last save wins: alpha (saved later) appears first
     await router.handle('/ws list', ctx);
     const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
-    let texts = collectCardTexts(input.card.body!.elements ?? []);
+    let texts = collectCardTexts(input.card);
     // Recent sort: alpha was saved after beta → alpha first
     const recentAlphaIdx = texts.findIndex((t) => t.includes('alpha'));
     const recentBetaIdx = texts.findIndex((t) => t.includes('beta'));
@@ -1241,7 +1232,7 @@ describe('CommandRouter', () => {
     const sortCard = connector._cards[connector._cards.length - 1] as {
       body: { elements: TestCardElement[] };
     };
-    texts = collectCardTexts(sortCard.body.elements);
+    texts = collectCardTexts(sortCard);
     // Alpha sort: alpha first
     const alphaIdx = texts.findIndex((t) => t.includes('alpha'));
     const betaIdx = texts.findIndex((t) => t.includes('beta'));
@@ -1258,7 +1249,7 @@ describe('CommandRouter', () => {
     // After toggling back to recent, the button offers "切换为 字母顺序"
     expect(sortButtons.some((b) => b.text?.content?.includes('切换为'))).toBe(true);
     // Sort indicator shows current mode
-    const sortTexts = collectCardTexts(recentCard.body.elements);
+    const sortTexts = collectCardTexts(recentCard);
     expect(sortTexts.some((t) => t.includes('排序：'))).toBe(true);
   });
 
@@ -1274,8 +1265,7 @@ describe('CommandRouter', () => {
     // Sanity: recent sort puts most recently saved on top
     await router.handle('/ws list', ctx);
     let texts = collectCardTexts(
-      (connector._sent[connector._sent.length - 1].input as { card: TestCard }).card.body!
-        .elements ?? [],
+      (connector._sent[connector._sent.length - 1].input as { card: TestCard }).card,
     );
     const secondIdx = texts.findIndex((t) => t.includes('second'));
     const firstIdx0 = texts.findIndex((t) => t.includes('first'));
@@ -1288,7 +1278,7 @@ describe('CommandRouter', () => {
     // Check the refreshed card: "first" should now appear before "second"
     const refreshedCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
     expect(refreshedCard).toBeDefined();
-    texts = collectCardTexts(refreshedCard.body.elements);
+    texts = collectCardTexts(refreshedCard);
     const firstIdx = texts.findIndex((t) => t.includes('first'));
     const secondIdx2 = texts.findIndex((t) => t.includes('second'));
     expect(firstIdx).toBeGreaterThan(-1);
@@ -1316,7 +1306,7 @@ describe('CommandRouter', () => {
       body: { elements: TestCardElement[] };
     };
     const elements = card.body.elements;
-    const texts = collectCardTexts(elements);
+    const texts = collectCardTexts({ body: { elements } });
     expect(texts.some((t) => t.includes('ws05'))).toBe(true);
     expect(texts.some((t) => t.includes('ws07'))).toBe(true);
     expect(texts.some((t) => t.includes('ws00'))).toBe(false);
@@ -1344,7 +1334,7 @@ describe('CommandRouter', () => {
     const card = connector._cards[connector._cards.length - 1] as {
       body: { elements: TestCardElement[] };
     };
-    const texts = collectCardTexts(card.body.elements);
+    const texts = collectCardTexts(card);
     expect(texts.some((t) => t.includes('ws06'))).toBe(false);
     expect(texts.some((t) => t.includes('ws07'))).toBe(true);
   });
@@ -3446,19 +3436,23 @@ describe('CommandRouter', () => {
     const { router, connector } = createRouter();
 
     // 点下拉（logging.level 默认 info → debug）
-    await router.handleCardAction(
+    const response = await router.handleCardAction(
       { cmd: 'config.set', key: 'logging.level', option: 'debug' },
       ctx,
     );
 
-    // 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
+    // 被点击的卡由响应体原地替换（零 PATCH）；响应是 toast + card。
     expect(connector._sent.length).toBe(0);
-    expect(connector._cards.length).toBeGreaterThan(0);
+    expect(connector._cards.length).toBe(0);
+    expect(response).toMatchObject({ toast: { type: 'info' }, card: { type: 'raw' } });
 
     // pendingConfig 只改内存，不写盘
     expect(router.pendingConfig).not.toBeNull();
     expect(router.pendingConfig!.logging.level).toBe('debug');
     expect(fs.existsSync(path.join(tmpDir, 'config.yaml'))).toBe(false);
+    // 后台渲染不重复刷被点击的卡（inlineMessageId 排除）。
+    await router.flushConfigRender();
+    expect(connector._cards.length).toBe(0);
   });
 
   it('config.set reads option into pendingConfig', async () => {
@@ -3466,14 +3460,14 @@ describe('CommandRouter', () => {
 
     // 点击 select（config.set + key + option）
     // 现在模型选项使用 alias (opus/sonnet/haiku)，不再是 model ID
-    await router.handleCardAction({ cmd: 'config.set', key: 'claude.model', option: 'haiku' }, ctx);
+    const response = await router.handleCardAction(
+      { cmd: 'config.set', key: 'claude.model', option: 'haiku' },
+      ctx,
+    );
 
-    // 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
+    // 被点击的卡由响应体原地替换；卡片内容从响应体取。
     expect(connector._sent.length).toBe(0);
-    expect(connector._cards.length).toBeGreaterThan(0);
-    const card = connector._cards[connector._cards.length - 1] as {
-      body?: { elements?: object[] };
-    };
+    const card = (response as { card: { data: { body?: { elements?: object[] } } } }).card.data;
     const cardStr = JSON.stringify(card.body?.elements);
     // 现在显示 alias 而不是 model ID
     expect(cardStr).toContain('haiku');
@@ -3544,8 +3538,11 @@ describe('CommandRouter', () => {
 
     // 两次都落进共享草稿，最终值是后到达的那次
     expect(router.pendingConfig?.logging.level).toBe('warn');
-    // 两次动作各自触发一次卡片更新
-    expect(connector._cards.length).toBe(cardsBefore + 2);
+    // 两次响应体各直出一张卡（回调链零网络写）。
+    expect(connector._cards.length).toBe(cardsBefore);
+    // 后台渲染合并窗口：同一张卡被连点，扇出时排除被点击的那张（响应体已替换）。
+    await router.flushConfigRender();
+    expect(connector._cards.length).toBe(cardsBefore);
   });
 
   it('config.save writes all pending changes to disk', async () => {
@@ -3583,23 +3580,19 @@ describe('CommandRouter', () => {
     expect(router.pendingConfig).toBeNull();
   });
 
-  it('config.save returns within the response budget when the card refresh hangs', async () => {
-    // 飞书卡片回调 3 秒上限：卡片刷新（慢探针/网络）不得把响应一起拖住。
-    // 保存已经落盘，超预算后收尾转入后台（下一个 config.* 动作会先等它）。
+  it('config.save 立即返回（卡片刷新挂住也不阻塞回调）', async () => {
+    // 飞书卡片回调 3 秒上限：保存落盘后立即回包，兄弟卡刷新在后台队列，
+    // 即使 PATCH 永不 resolves 也不影响响应。
     const { router, bridge } = createRouter();
     await router.handleCardAction(
       { cmd: 'config.set', key: 'logging.level', option: 'debug' },
       ctx,
     );
-    vi.spyOn(bridge, 'updateCardInPlace').mockReturnValue(new Promise(() => {}));
-    vi.useFakeTimers();
-    try {
-      const save = router.handleCardAction({ cmd: 'config.save' }, ctx);
-      await vi.advanceTimersByTimeAsync(1_500);
-      await expect(save).resolves.toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
+    await router.flushConfigRender();
+    vi.spyOn(bridge, 'patchCard').mockReturnValue(new Promise(() => {}));
+    const save = router.handleCardAction({ cmd: 'config.save' }, ctx);
+    // 不推进任何时钟：回调必须立刻返回（切换未发生，无通知，返回 undefined）。
+    await expect(save).resolves.toBeUndefined();
     expect(fs.readFileSync(router.configPath, 'utf-8')).toContain('level: debug');
   });
 
@@ -3732,19 +3725,22 @@ describe('CommandRouter', () => {
     );
     expect(router.pendingConfig?.logging.level).toBe('debug');
 
-    // 第三次交互只点 A：A 与 B 都必须被刷到「同一份草稿」（level=warn）
+    // 第三次交互只点 A：A 由响应体原地替换（零 PATCH），B 必须被后台刷到同一份草稿。
     connector._updates.length = 0;
-    await router.handleCardAction(
+    const response = await router.handleCardAction(
       { cmd: 'config.set', key: 'logging.level', option: 'warn' },
       cardA,
     );
+    await router.flushConfigRender();
+    const inlineCard = (response as { card: { data: unknown } }).card.data;
 
+    // 兄弟卡（B）被后台渲染队列刷到同一份草稿；A 的最新视图在响应体里。
     const patchedIds = connector._updates.map((u) => u.messageId).sort();
-    expect(patchedIds).toEqual(['om-config-A', 'om-config-B']);
+    expect(patchedIds).toEqual(['om-config-B']);
     const cardFor = (id: string) =>
       JSON.stringify(connector._updates.find((u) => u.messageId === id)?.card ?? '');
     // 两张卡渲染的是同一份草稿（同一视图）——旧实现只刷被点击的那张，这里不等
-    expect(cardFor('om-config-A')).toBe(cardFor('om-config-B'));
+    expect(cardFor('om-config-B')).toBe(JSON.stringify(inlineCard));
   });
 
   it('cmdConfig <key> <value> command writes to disk immediately', async () => {
@@ -3777,6 +3773,32 @@ describe('CommandRouter', () => {
     await router.handle('/exit', ctx);
     expect((connector._sent[0].input as { text: string }).text).toContain('退出');
     expect(exited).toBe(true);
+  });
+
+  it('/exit 前冲刷后台渲染队列：待刷的兄弟卡不会随进程一起丢掉', async () => {
+    const { router, connector } = createRouter({ exitHandler: () => {} });
+    const cardA = { ...ctx, messageId: 'om-A' };
+    const cardB = { ...ctx, messageId: 'om-B' };
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      cardA,
+    );
+    await router.flushConfigRender();
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'warn' },
+      cardB,
+    );
+    await router.flushConfigRender();
+    connector._updates.length = 0;
+
+    // 在 B 上点击后立刻退出：合并窗口还没到点，但退出路径必须把它冲掉。
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'error' },
+      cardB,
+    );
+    await router.handle('/exit', ctx);
+
+    expect(connector._updates.map((u) => u.messageId)).toContain('om-A');
   });
 
   it('unknown command returns hint', async () => {
@@ -4382,12 +4404,15 @@ describe('config switch agent sends Resume card', () => {
     // 2. Switch to codex via config card — claude session saved to previousSessions
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'codex' }, ctx);
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
+    await router.flushConfigRender();
     // 3. Now switch back to claude — previousSessions['claude'] has sid, so canRestore=true
     await router.handleCardAction(
       { cmd: 'config.set', key: 'defaultAgent', option: 'claude' },
       ctx,
     );
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
+    // 切换卡由后台渲染队列发送：冲刷合并窗口后再断言。
+    await router.flushConfigRender();
 
     // The last sent card should be a Resume card for the restored claude session
     const card = lastSentCard(connector);
@@ -4397,7 +4422,7 @@ describe('config switch agent sends Resume card', () => {
     expect(header).toContain('切换 Agent');
     expect(header).toContain('Claude');
     // Card body should reference the restored session
-    const texts = collectCardTexts(card!.body?.elements ?? []);
+    const texts = collectCardTexts(card!);
     const allText = texts.join(' ');
     expect(allText).toContain(sid);
   });
@@ -4412,6 +4437,7 @@ describe('config switch agent sends Resume card', () => {
     // Toggle defaultAgent to kimi and save — no previous session for kimi
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'kimi' }, ctx);
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
+    await router.flushConfigRender();
 
     // Should send a compact switch card (not plain text, not Resume card)
     const card = lastSentCard(connector);
@@ -4420,7 +4446,7 @@ describe('config switch agent sends Resume card', () => {
     expect(header).toContain('切换到');
     expect(header).toContain('Kimi');
     // Body should contain the notice text
-    const texts = collectCardTexts(card!.body?.elements ?? []);
+    const texts = collectCardTexts(card!);
     const allText = texts.join(' ');
     expect(allText).toContain('session 已清空');
     // 清空分支 = 下一条消息在此工作区开新对话：回执必须带 📁 工作区（与 /new 同形）
@@ -4428,6 +4454,23 @@ describe('config switch agent sends Resume card', () => {
     // No new-session button: the next message already starts a fresh session,
     // a button would mislead users into thinking a click is required
     expect(JSON.stringify(card!.body?.elements ?? [])).not.toContain('"cmd":"new-session"');
+  });
+
+  it('config.save 切换卡工作区行在 Windows 风格 cwd 下按原文命中', async () => {
+    // 回归：markdownDiv 会把 `\` 转义成 `\\`，取文不还原时只有 ci-windows 假红
+    // （POSIX 路径无反斜杠，永远绿）。这里在任意宿主上用 Windows 风格 cwd 钉住。
+    const winDir = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\config-switch-win';
+
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', winDir);
+
+    await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'kimi' }, ctx);
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+    await router.flushConfigRender();
+
+    const card = lastSentCard(connector);
+    expect(card).toBeDefined();
+    expect(collectCardTexts(card!).join(' ')).toContain(`📁 ${winDir}`);
   });
 
   it('config.save without agent switch does not send switch card', async () => {

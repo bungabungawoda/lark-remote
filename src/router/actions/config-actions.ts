@@ -12,6 +12,7 @@ import { syncAgentChoices } from '../../runner/index.js';
 import { atomicWrite } from '../../persistence/atomic-write.js';
 import { getLogger } from '../../logger/index.js';
 import { sleep } from '../../common/sleep.js';
+import { enforceCardBudget } from '../../card/card-budget.js';
 import { agentDisplayName } from '../../card/card-shared.js';
 import { markdownDiv } from '../../card/card-helpers.js';
 import type { AgentKind } from '../../agent-kinds.js';
@@ -35,7 +36,9 @@ import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
 import {
   MAX_CONFIG_CARDS,
-  CONFIG_SAVE_RESPONSE_BUDGET_MS,
+  CONFIG_CALLBACK_BUDGET_MS,
+  CONFIG_OPEN_PREFETCH_BUDGET_MS,
+  CONFIG_SWITCH_NOTICE_BUDGET_MS,
   applyDefaultAgentSwitch,
   parkDshSessionBoundaryNotice,
   computeHasAgentConfigChange,
@@ -43,6 +46,8 @@ import {
   touchesAgentsSubtree,
 } from './shared.js';
 import type { ConfigSwitchResult } from './shared.js';
+import { scheduleConfigRender } from './config-render.js';
+import { logConfigPerf, ConfigPerfSpan } from '../../common/config-perf.js';
 
 export function ensurePendingConfig(host: CommandRouter): void {
   if (!host.pendingConfig) {
@@ -64,17 +69,78 @@ export function rememberConfigCard(host: CommandRouter, messageId: string | unde
   }
 }
 
+export interface ConfigRefreshStats {
+  patches: number;
+  t_build_ms: number;
+  t_patch_ms: number;
+}
+
+/**
+ * 配置卡的单一预算出口：inline 响应体与兄弟卡 PATCH 必须走同一套口径。
+ *
+ * 飞书对单卡「带 tag 节点 ≤ 200」（`MAX_CARD_COMPONENTS` 保守到 190）的限制在
+ * send 与 patch 两条路径上都成立。只在一处裁剪会让另一条路径被 `11310` 拒绝，
+ * 而 `patchCard` 失败会把该卡从 `configCardIds` 永久剔除——多卡同步静默失效，
+ * 表面症状是「只有刚点的那张卡有新值」。
+ */
+function budgetConfigCard(card: object, where: 'inline' | 'patch'): object {
+  const { card: safeCard, wasTruncated, reason, bytesAfter } = enforceCardBudget(card);
+  if (wasTruncated) {
+    getLogger().info(
+      `[router] config card budget applied (${where}): reason=${reason} bytesAfter=${bytesAfter}`,
+    );
+  }
+  return safeCard;
+}
+
+/**
+ * 把当前草稿刷到所有已知 config 卡片上（仅后台渲染队列调用）。
+ *
+ * **不在这里登记卡片**：登记是调度时刻的事（scheduleConfigRender 同步完成，
+ * `/c` 文本命令通过 skipRemember 排除）。之前把「是否登记」存进合并后的 pending
+ * 再传给本函数，合并时字段一丢就会把用户文本消息 id 登记成 config 卡，之后每次
+ * config.set 都会把那条聊天消息 PATCH 成配置卡。职责拆开后这类事故不可能再出现。
+ *
+ * `excludeMessageId` 是刚被响应体替换的那张，跳过避免同消息重复 PATCH 触发
+ * 飞书 230429。注意：它同时意味着这张卡不会拿到本轮刷新后的目录（如 DSH 新增
+ * provider），下一次点击会补齐——最终一致，不做二次 PATCH。
+ */
+export async function refreshConfigCards(
+  host: CommandRouter,
+  excludeMessageId?: string,
+): Promise<ConfigRefreshStats> {
+  const buildStart = Date.now();
+  const built = host.buildConfigCard().card;
+  // 与 inline 响应同一预算口径：超限卡的 PATCH 会被飞书整卡拒绝，
+  // 再被 patchCard 的失败分支把这个 messageId 永久剔除。
+  const card = built ? budgetConfigCard(built, 'patch') : undefined;
+  const t_build_ms = Date.now() - buildStart;
+  if (!card) return { patches: 0, t_build_ms, t_patch_ms: 0 };
+  const patchStart = Date.now();
+  let patches = 0;
+  for (const messageId of [...host.configCardIds]) {
+    if (messageId === excludeMessageId) continue;
+    const ok = await host.bridge.patchCard(messageId, card);
+    if (ok) patches += 1;
+    else host.configCardIds.delete(messageId);
+  }
+  return { patches, t_build_ms, t_patch_ms: Date.now() - patchStart };
+}
+
 /**
  * 把一次字段变更交给当前 agent 的 config builder（处理 provider→model 这类
- * 依赖关系），逐条写进草稿，再把草稿刷到所有配置卡。
- * `config.set`（下拉）与 `config.input`（输入框提交）共用同一套应用逻辑。
+ * 依赖关系），逐条写进草稿。`config.set`（下拉）与 `config.input`（输入框提交）
+ * 共用同一套应用逻辑。
+ *
+ * apply 段全是内存操作（+ 目录 SWR 同步读），不含网络写；卡片渲染交给后台队列。
  */
 export async function applyConfigFieldChange(
   host: CommandRouter,
   key: string,
   newValue: string,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
+  const span = new ConfigPerfSpan();
   try {
     host.ensurePendingConfig();
 
@@ -85,44 +151,39 @@ export async function applyConfigFieldChange(
     for (const patch of patches) {
       host.setNestedValue(host.pendingConfig!, patch.key, patch.value);
     }
+    span.segment('apply');
 
-    await host.refreshConfigCards(ctx);
+    // 回调响应体直出这张卡（飞书原地替换 pre-click 卡，零额外网络写）。
+    const card = host.buildConfigCard().card;
+    span.segment('build');
+    logConfigPerf('apply', {
+      cmd: 'config.set',
+      key,
+      agent: defaultAgent,
+      patches_in_callback: 0,
+      budget_exceeded: span.totalMs() > CONFIG_CALLBACK_BUDGET_MS,
+      ...span.fields(),
+    });
+    if (!card) return;
+
+    scheduleConfigRender(host, { ctx, refreshCatalogs: false, inlineMessageId: ctx.messageId });
+    return {
+      // 响应体携带卡片：飞书原地替换被点击的那张（零 PATCH）；兄弟卡由后台
+      // 渲染队列刷新。toast 给一行暂存提示，避免用户以为已经写盘。
+      toast: { type: 'info', content: `已暂选 ${newValue}（未保存）` },
+      card: { type: 'raw', data: budgetConfigCard(card, 'inline') },
+    };
   } catch (err) {
-    await host.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
+    return { toast: { type: 'error', content: `设置失败: ${(err as Error).message}` } };
   }
 }
 
 /**
- * 把当前草稿刷到所有已知 config 卡片上（含本次点击的那张）。
+ * 串行化 config.* 卡片回调的**内存草稿** apply（修复连击卡死 bug）。
  *
- * 被点击的那张走 `updateCardInPlace`（失败 fallback 发新卡，保证点击必有
- * 反馈）；其余兄弟卡走 `patchCard`（纯 best-effort，失败即从集合剔除，不再
- * 重复打无效 PATCH，也不会因为卡片过期而反复补发新卡）。
- */
-export async function refreshConfigCards(host: CommandRouter, ctx: CommandContext): Promise<void> {
-  host.rememberConfigCard(ctx.messageId);
-  const card = host.buildConfigCard().card;
-  if (!card) return;
-  for (const messageId of [...host.configCardIds]) {
-    if (messageId === ctx.messageId) {
-      await host.bridge.updateCardInPlace(card, ctx);
-      continue;
-    }
-    const ok = await host.bridge.patchCard(messageId, card);
-    if (!ok) host.configCardIds.delete(messageId);
-  }
-}
-
-/**
- * 串行化 config.* 卡片回调（修复连击卡死 bug）。
- *
- * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，不进 bridge 的
- * 串行队列；多次快速点击下拉/文本框会并发读写 `pendingConfig` 并同时调
- * `updateCardInPlace` → 两个 patch 请求乱序到达飞书，后到达的 patch（点击 1
- * 的旧卡片）覆盖先到达的 patch（点击 2 的新卡片），用户看到控件卡死。
- *
- * 此方法把所有 config.* 动作串成一个 Promise chain：每个动作等前一个动作
- * 的 `updateCardInPlace` 完全 settle 后再读 `pendingConfig`。
+ * 与旧版的区别：链里只有内存读写 + 建卡，没有网络写；卡片 PATCH 由独立的
+ * 后台渲染队列串行合并。因此不再 `await host.configSaveTail`——旧版等后台 tail
+ * 会让一次慢收尾传染给后续每一次点击（日志里连点后接超时的形态）。
  */
 export function enqueueConfigAction(
   host: CommandRouter,
@@ -130,8 +191,6 @@ export function enqueueConfigAction(
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
   const run = async (): Promise<CardActionResponse | void> => {
-    // 上一轮 config.save 若把收尾转入后台，先等它，避免并发改卡（连击乱序）。
-    await host.configSaveTail;
     try {
       return await host.dispatchConfigAction(value, ctx);
     } catch (err) {
@@ -161,8 +220,7 @@ export async function dispatchConfigAction(
         await host.bridge.sendResult({ text: '缺少参数' }, ctx);
         return;
       }
-      await host.applyConfigFieldChange(key, newValue, ctx);
-      return;
+      return host.applyConfigFieldChange(key, newValue, ctx);
     }
     case 'config.input': {
       // Handle input field: value.key is the field key.
@@ -179,8 +237,7 @@ export async function dispatchConfigAction(
         await host.bridge.sendResult({ text: '缺少输入值' }, ctx);
         return;
       }
-      await host.applyConfigFieldChange(key, newValue, ctx);
-      return;
+      return host.applyConfigFieldChange(key, newValue, ctx);
     }
     case 'config.save': {
       // 批量保存：将 pendingConfig 一次性写入磁盘
@@ -195,64 +252,36 @@ export async function dispatchConfigAction(
         return;
       }
 
+      const span = new ConfigPerfSpan();
       try {
         const oldDefaultAgent = host.config.defaultAgent;
         host.config = setConfigValues(host.configPath, host.config, updates);
         // 运行时传播（idleTimeout / clearRunners / syncAgentChoices /
-        // defaultAgent 切换的 session 处理）抽到共享方法，与文本直写路径共用。
+        // defaultAgent 切换的 session 处理）与文本直写路径共用，全是本地同步操作。
         const switchResult = host.propagateConfigSave(oldDefaultAgent, updates, ctx);
-
         host.pendingConfig = null;
-        // 保存已成功。卡片刷新 + 切换卡是收尾工作：给它们一个响应预算，
-        // 超时就把剩下的部分转入后台，回调先回 200——飞书 3 秒上限之外没有
-        // 第二次机会，卡在慢操作上时用户只会看到「目标服务器超时未响应」。
-        const finish = async (): Promise<CardActionResponse | void> => {
-          // 原地更新卡片：保存后卡片刷新为已保存状态。
-          // 卡片刷新失败不吞切换通知——保存已成功，仅记录日志，
-          // 后续切换消息照常发送；真正写盘/传播阶段的失败才走外层 catch 报「保存失败」。
-          try {
-            // host 可能已变更 → 重新预取 DSH 目录（内部按 host 缓存，未变不重复拉）
-            await host.prefetchConfigCardCatalogs();
-            await host.refreshConfigCards(ctx);
-          } catch (refreshErr) {
-            getLogger().warn(
-              `[router] config.save 卡片刷新失败（保存已成功）: ${(refreshErr as Error).message}`,
-            );
-          }
-
-          // agent 切换时发送 Resume 卡片（替代纯文本通知），
-          // 让用户直观看到新 agent 的会话状态和历史。
-          // 发送失败（resolve false）时兜底回退 toast 即时反馈。
-          if (switchResult.notice) {
-            const switchCard = host.buildConfigSwitchCard(switchResult, ctx);
-            const sent = await host.bridge.sendResult(switchCard, ctx);
-            if (!sent) {
-              return {
-                toast: { type: 'info', content: switchResult.notice },
-              };
-            }
-          }
-        };
-
-        const work = finish().catch((err: unknown) => {
-          getLogger().error('[router] config.save 收尾失败（保存已成功）:', err);
+        span.segment('apply');
+        logConfigPerf('apply', {
+          cmd: 'config.save',
+          agent: host.config.defaultAgent,
+          fields: Object.keys(updates).length,
+          budget_exceeded: span.totalMs() > CONFIG_CALLBACK_BUDGET_MS,
+          ...span.fields(),
         });
-        host.configSaveTail = work.then(
-          () => undefined,
-          () => undefined,
-        );
-        const budgetExceeded = Symbol('config-save-budget');
-        const outcome = await Promise.race([
-          work,
-          sleep(CONFIG_SAVE_RESPONSE_BUDGET_MS).then(() => budgetExceeded),
-        ]);
-        if (outcome === budgetExceeded) {
-          getLogger().warn(
-            `[router] config.save 响应超出 ${CONFIG_SAVE_RESPONSE_BUDGET_MS}ms 预算，卡片刷新与切换卡转入后台`,
-          );
-          return;
+
+        // 目录预取 + 兄弟卡刷新进后台渲染队列（串行 + 合并）。切换通知仍在回调
+        // 内发送（锚定契约：它是持久消息，成功不回 toast、失败才回退），但带预算
+        // ——见 sendSwitchNotice。
+        scheduleConfigRender(host, {
+          ctx,
+          refreshCatalogs: true,
+          inlineMessageId: ctx.messageId,
+        });
+
+        if (switchResult.notice) {
+          return await sendSwitchNotice(host, switchResult, ctx);
         }
-        return outcome as CardActionResponse | void;
+        return;
       } catch (err) {
         await host.bridge.sendResult({ text: `保存失败: ${(err as Error).message}` }, ctx);
       }
@@ -261,6 +290,60 @@ export async function dispatchConfigAction(
     default:
       return;
   }
+}
+
+const SWITCH_NOTICE_BUDGET_HIT = Symbol('switch-notice-budget');
+
+/**
+ * 切换 Agent 的持久化通知：仍在回调内发送，但给一个响应预算。
+ *
+ * 锚定契约要求它是**持久消息**（成功不回 toast、失败才回退 info toast），所以
+ * 不能直接丢进后台渲染队列。但这是整条回调里唯一剩下的网络写：写盘与运行时
+ * 传播已经完成，若网络长尾（重试、限流）把它拖过飞书 3 秒上限，用户看到的是
+ * 「目标服务器超时未响应」而配置其实已保存——最坏的误导。
+ *
+ * 超预算时通知转后台继续发；后台也失败才补一条文本回执，保证用户最终仍能
+ * 看到「切到哪个 agent」，只是不在同一次回调里。
+ */
+async function sendSwitchNotice(
+  host: CommandRouter,
+  switchResult: ConfigSwitchResult,
+  ctx: CommandContext,
+): Promise<CardActionResponse | void> {
+  const notice = switchResult.notice!;
+  const card = host.buildConfigSwitchCard(switchResult, ctx);
+  const send = host.bridge.sendResult(card, ctx);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budgetHit = new Promise<typeof SWITCH_NOTICE_BUDGET_HIT>((resolve) => {
+    timer = setTimeout(() => resolve(SWITCH_NOTICE_BUDGET_HIT), CONFIG_SWITCH_NOTICE_BUDGET_MS);
+    // 发送先胜出时别让这个定时器把进程多钉住一个预算。
+    timer.unref?.();
+  });
+  let outcome: boolean | typeof SWITCH_NOTICE_BUDGET_HIT;
+  try {
+    outcome = await Promise.race([send, budgetHit]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (outcome !== SWITCH_NOTICE_BUDGET_HIT) {
+    // 回调内已完成：成功不回 toast，失败回退 info toast（锚定契约）。
+    return outcome ? undefined : { toast: { type: 'info', content: notice } };
+  }
+
+  getLogger().warn(`[router] 切换通知超出 ${CONFIG_SWITCH_NOTICE_BUDGET_MS}ms 预算，转后台补发`);
+  void send.then(
+    (sent) => {
+      if (sent) return;
+      getLogger().warn('[router] 切换通知卡片后台发送失败，改发文本回执');
+      void host.bridge.sendResult({ text: notice }, ctx);
+    },
+    (err: unknown) => {
+      getLogger().error('[router] 切换通知后台发送异常，改发文本回执:', err);
+      void host.bridge.sendResult({ text: notice }, ctx);
+    },
+  );
+  // 回调体已经给出反馈（保存成功的卡片刷新由后台队列完成），不再补 toast。
+  return;
 }
 
 export function setNestedValue(
@@ -406,12 +489,32 @@ export async function cmdConfig(
   args: string[],
   ctx: CommandContext,
 ): Promise<CommandResult> {
+  const span = new ConfigPerfSpan();
   // Ensure probe cache is populated before building the card.
   await probeAllAgents();
+  span.segment('probe');
 
-  // 动态清单预取：DSH 模型/预设目录、CodeBuddy 模型目录。卡渲染前刷新，
-  // 外部新增的 provider 与切换后的 CodeBuddy 登录立即可见；失败回退兜底。
-  await host.prefetchConfigCardCatalogs(true, ctx);
+  // 动态清单预取：DSH 模型/预设目录、CodeBuddy 模型目录。
+  // 只给一个短预算，超时立即用缓存/兜底清单出卡，后台继续刷新并合并渲染一次
+  // （飞书卡片回调 3 秒上限；打开 /config 不该被 RPC/探针拖住）。
+  const prefetch = host.prefetchConfigCardCatalogs(true, ctx);
+  const prefetchDone = Symbol('prefetch-done');
+  const outcome = await Promise.race([
+    prefetch.then(() => prefetchDone),
+    sleep(CONFIG_OPEN_PREFETCH_BUDGET_MS),
+  ]);
+  const deferred = outcome !== prefetchDone;
+  span.segment('prefetch');
+  if (deferred) {
+    // 交给 router 在卡片发送并登记之后接上刷卡片（见 trackConfigOpenRefresh）：
+    // 预取先于发卡落地时，新卡还没进 configCardIds，这里直接调度会漏掉它。
+    host.trackConfigOpenRefresh(prefetch);
+  }
+  logConfigPerf('open', {
+    agent: host.config.defaultAgent,
+    prefetch_deferred: deferred,
+    ...span.fields(),
+  });
 
   // Check if this is a direct set command: /config <key> <value>
   // Command-style set: immediate write to disk, clear pendingConfig
@@ -453,7 +556,9 @@ export async function cmdConfig(
           text: { tag: 'lark_md', content: `⚠️ 已丢弃 ${discarded} 项未保存修改` },
         });
       }
-      return card;
+      // 发送成功后由 router 登记（trackConfigCard）：deferred 目录刷新与后续
+      // config.* 兄弟卡刷新都要覆盖这张卡。
+      return { ...card, trackConfigCard: true };
     } catch (err) {
       return { text: `设置失败: ${(err as Error).message}` };
     }
@@ -461,7 +566,8 @@ export async function cmdConfig(
 
   // Default: show interactive config card - initialize pendingConfig if needed
   host.ensurePendingConfig();
-  return host.buildConfigCard();
+  // 发送成功后由 router 登记（trackConfigCard），让 deferred 目录刷新能覆盖它。
+  return { ...host.buildConfigCard(), trackConfigCard: true };
 }
 
 /**

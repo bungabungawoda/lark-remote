@@ -226,8 +226,9 @@ describe('缓存', () => {
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
-  it('models.json 变化后重新读取', () => {
+  it('models.json 变化后重新读取：旧快照立即返回 + 后台异步刷新', async () => {
     mockSpawnSync.mockReturnValue(syncOk(TABLE));
+    mockSpawnProcess.mockImplementation(() => fakeChild(TABLE));
     writeModelsJson({ Volcano: { models: [{ id: 'glm-5.2' }] } });
     loadPiConfig();
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
@@ -236,9 +237,19 @@ describe('缓存', () => {
       Volcano: { models: [{ id: 'glm-5.2' }, { id: 'glm-5.3' }] },
       lt: { models: [{ id: 'glm-5.1' }] },
     });
+    // 缓存键漂移：同步读不得重启 CLI（旧快照照常返回），刷新走异步路径。
     loadPiConfig();
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnProcess).toHaveBeenCalledTimes(1);
 
-    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+    // 后台刷新落地后，下一次同步读拿到新清单。
+    await loadPiListedModelsAsync();
+    expect(loadPiConfig().modelOptions()).toEqual([
+      'deepseek-flash',
+      'deepseek-v4-pro',
+      'MiniMax-M3',
+      'glm-5.2',
+    ]);
   });
 
   it('失败也进缓存：30s 内不重复等超时', () => {

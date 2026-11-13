@@ -180,7 +180,7 @@ describe('CodebuddyAcpRunner', () => {
     const titles = events
       .filter((e) => e.type === 'session_info')
       .map((e) => (e as { title?: string }).title);
-    // 带 _meta 团队扩展的 session_info 不得进主事件流（§9.27 同源教训）；
+    // 带 _meta 团队扩展的 session_info 不得进主事件流（§9.28 同源教训）；
     // 无 _meta 的同型事件正常透传（证明过滤是按 _meta 而非按方法名一刀切）。
     expect(titles).toEqual(['主会话标题']);
 

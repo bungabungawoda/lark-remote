@@ -108,3 +108,17 @@ function escapeMarkdown(content: string): string {
   if (!content) return content;
   return content.replace(/\\/g, '\\\\');
 }
+
+/**
+ * Inverse of escapeMarkdown (collapses `\\` back to `\`).
+ *
+ * 生产代码不使用（转义发生在发送前，飞书侧负责还原）；供测试侧从渲染后的
+ * 卡片 JSON 取回原始文本——Windows 路径含 `\`，markdownDiv 会将其翻倍，
+ * 断言原样路径时必须先经此还原（ci-windows 曾因此两处 anchor 假红）。
+ * 只对 `lark_md` 文本调用：plain_text（如 header 标题）未经转义，还原会
+ * 破坏合法的 `\\` 字面量。
+ */
+export function unescapeMarkdown(content: string): string {
+  if (!content) return content;
+  return content.replace(/\\\\/g, '\\');
+}

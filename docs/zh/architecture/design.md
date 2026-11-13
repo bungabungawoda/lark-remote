@@ -751,6 +751,11 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 **关键约束**：折叠是**视觉隐藏**，JSON payload 仍含全部内容，28KB 字节预算
 （`CARD_BUDGET_BYTES`）仍需遵守。折叠减少的是视觉高度，不是序列化大小。
 
+**取文侧约束**：`markdownDiv` 对内容做反斜杠转义（`\` → `\\`），测试从卡片
+JSON 取 `lark_md` 文本断言原样路径时必须先还原（`tests/lib/card-view.ts` 的
+`collectCardTexts` / `unescapeMarkdown`）。不还原时断言只在 Windows 上红——
+Windows 路径天然含反斜杠，POSIX 宿主永远绿。
+
 **Run card 折叠策略**（`src/card/run-renderer.ts` + `src/card/tool-render.ts`）：
 
 | 内容                    | 折叠行为                                                             | 理由                                             |
@@ -1146,10 +1151,33 @@ messageId。
 内容（2026-10-08 发现的缺陷；飞书卡片不会自动下线，旧卡随时可点）。
 
 做法：`configCardIds` 记住交互过的 config 卡（有界 5 张，LRU 近似），任何一次编辑/保存
-后由 `refreshConfigCards` 把草稿刷到每张卡。被点击的那张走 `updateCardInPlace`（失败
-fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCard`（纯 best-effort PATCH，
-失败即从集合剔除）—— 兄弟卡不能走 `updateCardInPlace`：卡片过期时它每次都会补发一张
-新卡，越点越多。
+后由 `refreshConfigCards` 把草稿刷到每张卡。
+
+**回调链与刷卡链拆开（性能约束）**：飞书卡片回调 3 秒上限，网络写不能进回调的
+await 链。
+
+- `config.set` / `config.input`：apply 段只改内存草稿；被点击的那张由回调响应体的
+  `card: {type:'raw'}` 原地替换（零网络写），兄弟卡交给后台渲染队列。
+- `config.save`：写盘 + 运行时传播同步完成后回包；切换 Agent 的持久化通知仍在回调
+  内发送（锚定契约：成功不回 toast、失败才回退 info toast，且卡片刷新失败不得吞掉
+  通知），但带 `CONFIG_SWITCH_NOTICE_BUDGET_MS` 预算——超时转后台补发，后台也失败
+  才补一条文本回执。它是回调里唯一的网络写，无预算就会把已保存成功的操作报成
+  「目标服务器超时未响应」。目录预取与兄弟卡 PATCH 进后台队列。
+- **预算口径单源**：inline 响应体与兄弟卡 PATCH 都走 `budgetConfigCard`
+  （`enforceCardBudget`）。只给其中一条裁剪，另一条会被飞书 `11310` 整卡拒绝，
+  而 `patchCard` 失败会把这个 messageId 从 `configCardIds` 永久剔除。
+- **退出前冲刷**：`/exit`、`/restart` 前 `flushConfigRender` 带
+  `CONFIG_EXIT_FLUSH_BUDGET_MS` 短预算，不丢已算好的兄弟卡 PATCH，也不阻住进程。
+- `src/router/actions/config-render.ts`：串行 + 合并窗口（`CONFIG_RENDER_DEBOUNCE_MS`）
+  的后台渲染队列。连点 N 次只扇出 1 次 PATCH；渲染时从**最新**草稿重建，最后一次
+  状态赢；被点击的那张（`inlineMessageId`）跳过，避免同消息重复 PATCH 触发 230429。
+- 兄弟卡只能走 `Bridge.patchCard`（best-effort，失败即从集合剔除）—— 不能走
+  `updateCardInPlace`：卡片过期时它每次都会补发一张新卡，越点越多。
+
+埋点（`src/common/config-perf.ts`，日志前缀 `[perf][config]`）供回归对比：
+`event=callback`（回调总耗时）、`event=apply`、`event=render`（merged/patches）、
+`event=catalog`（`sync_spawn=true` 只允许出现在 `hit=cold`）、`event=open`
+（prefetch_deferred）、`event=flush`（仅 config.* 回调）。
 
 ### 9.26 排队卡按 lane 占用者渲染：Compact 占队列时自报身份并禁用立即执行
 
@@ -1200,7 +1228,26 @@ fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCar
 （身份 / 位置 / 按钮，见其中「排队卡按 lane 占用者渲染」一节）、`queue-immediate-guards.test.ts`
 （执行层守卫）。
 
-### 9.27 codex app-server：通知必须按线程归属过滤，子 agent 线程不得污染会话指针
+### 9.27 模型目录统一 SWR 同步读契约（config 卡永不阻塞事件循环）
+
+所有 agent 的配置卡模型目录 loader（pi/codex/opencode/kimi，以及已成此模式的
+qoder/codebuddy）共用一个同步读契约：`src/config/catalog-cache.ts` 的 `SyncCatalog`。
+
+- 同步读（`buildFields` 路径）**永不因 TTL 过期而 spawn CLI**：命中快照直接返回；
+  过期返回旧快照（stale）并点火一次后台异步刷新；键漂移（binary/配置目录/文件指纹
+  变化）不返回旧清单，改回 fallback 并点火刷新——旧身份的清单冒充新身份会让卡片
+  展示、甚至写回一个当前 binary/配置目录下不存在的模型 id。事件循环阻塞会拖住的
+  不只是配置卡，还有正在流式 patch 的 run 卡。
+- 后台刷新单飞（并发点火只跑一次），失败保留上次成功快照并落负缓存（下拉框不变空）。
+- 冷启动（无快照且无在途刷新）保留一次同步加载，保证首帧就有真实清单；启动预热
+  （`src/index.ts` warmXxx 系列）后生产路径几乎不会走到。
+- 每次读打 `event=catalog` 埋点：`hit=cold` 的 `sync_spawn=true` 是冷启动唯一允许
+  的一次同步加载，其它 hit 值出现 `sync_spawn=true` 即回归。
+
+**新增 agent 接入模板**：目录 loader 必须实现为 `SyncCatalog`（同步读快照 + 异步
+loadAsync），禁止在同步路径 spawn CLI。
+
+### 9.28 codex app-server：通知必须按线程归属过滤，子 agent 线程不得污染会话指针
 
 **起因（2026-10-09 线上）**：codex 会话在一次「并行都做」的 run 之后，后续每条
 消息都以 `cannot resume an unloaded multi-agent v2 sub-agent through its parent`

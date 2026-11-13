@@ -34,6 +34,8 @@ import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache, warmCodexEndpointModels } from './config/codex-config.js';
 import { warmPiListCache } from './config/pi-config.js';
+import { warmOpencodeConfigCache } from './config/opencode-config.js';
+import { warmKimiConfigCache } from './config/kimi-config.js';
 import {
   defaultCodebuddyProductConfigCacheDir,
   warmCodebuddyCatalogWithRegionDetection,
@@ -650,6 +652,13 @@ function initializeRunner(
   // accept. Fire-and-forget; a failure lands in the negative cache and the sync
   // card path falls back to the static list.
   warmPiListCache();
+
+  // Warm opencode / kimi catalogs too. Their sync loaders would otherwise spawn
+  // `opencode models` / `kimi provider list` (up to 10s) on the first card build
+  // after the TTL expires, blocking the whole event loop (run-card streaming
+  // included). Startup warm keeps the sync read path on a cache hit.
+  warmOpencodeConfigCache(getAgentConfig(config, 'opencode')?.acp?.binary);
+  warmKimiConfigCache();
 
   // Warm the model list of the endpoints the agents point at, when they point at
   // a custom one (a relay, a self-hosted gateway): Claude Code's settings

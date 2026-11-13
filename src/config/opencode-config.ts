@@ -1,14 +1,18 @@
 /**
  * OpenCode 配置读取工具
  *
- * 从 opencode models 命令获取 provider 和 model 信息
+ * 从 opencode models 命令获取 provider 和 model 信息。
+ *
+ * 同步读走统一 SWR 快照（`SyncCatalog`）：TTL 过期返回旧清单 + 后台异步刷新，
+ * 不再在卡片构建路径上同步 spawn（上限 10s，会卡住整个事件循环）。
  */
 
 import { resolveExecutable } from '../platform/command.js';
 import { spawnProcessSync } from '../platform/spawn.js';
 import { getLogger } from '../logger/index.js';
+import { SyncCatalog } from './catalog-cache.js';
 
-interface OpencodeConfigResult {
+export interface OpencodeConfigResult {
   /** provider 名称列表 */
   providerNames: string[];
   /** 根据 provider 获取可用模型列表（返回纯 model ID，不带 provider 前缀） */
@@ -36,18 +40,14 @@ const OPENCODE_CONFIG_CACHE_TTL_MS = 60_000;
  * 都同步阻塞事件循环最长 10s（与 codex-config 负缓存对齐）。
  */
 const OPENCODE_NEGATIVE_CACHE_TTL_MS = 30_000;
-let opencodeConfigCache: {
-  binary: string;
-  result: OpencodeConfigResult;
-  timestamp: number;
-} | null = null;
-let opencodeConfigFailedAt: { binary: string; timestamp: number } | null = null;
 
-/** 清空缓存（仅供测试使用，生产代码无调用点） */
-export function _invalidateOpencodeConfigCacheForTest(): void {
-  opencodeConfigCache = null;
-  opencodeConfigFailedAt = null;
-}
+/** `opencode models` 调用边界（同步/异步一致）。 */
+const OPENCODE_COMMAND = {
+  label: 'opencode',
+  timeoutMs: 10_000,
+  // 30s → 10s，与 codex/kimi 对齐；maxBuffer 防模型清单 ENOBUFS 隐性截断
+  maxBuffer: 64 * 1024 * 1024,
+} as const;
 
 function buildFallbackResult(): OpencodeConfigResult {
   return {
@@ -69,104 +69,128 @@ function buildFallbackResult(): OpencodeConfigResult {
 }
 
 /**
- * 加载 opencode 配置，执行 opencode models 并解析
+ * 解析 `opencode models` 输出。
  *
- * @returns provider 列表和 model 查询接口
+ * 每个模型以 `provider/model` 格式开头，后面可能跟 JSON 块。只取模型头：
+ * 按**第一个**斜杠切（部分 provider 的 model ID 自身含 `/`，如 openrouter/
+ * anthropic/...）。
+ */
+function parseOpencodeModelsOutput(output: string): OpencodeConfigResult {
+  const providerModels = new Map<string, string[]>();
+
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim();
+    const slash = trimmed.indexOf('/');
+    if (slash <= 0 || slash === trimmed.length - 1) continue;
+    const providerID = trimmed.slice(0, slash);
+    const modelID = trimmed.slice(slash + 1);
+    if (!/^[a-zA-Z0-9_.-]+$/.test(providerID)) continue;
+    if (/\s/.test(modelID)) continue;
+
+    if (!providerModels.has(providerID)) {
+      providerModels.set(providerID, []);
+    }
+    providerModels.get(providerID)!.push(modelID);
+  }
+
+  const providerNames = Array.from(providerModels.keys()).sort();
+
+  const modelOptions = (provider?: string): string[] => {
+    if (!provider) {
+      const allModels = new Set<string>();
+      for (const models of providerModels.values()) {
+        for (const m of models) {
+          allModels.add(m);
+        }
+      }
+      return Array.from(allModels).sort();
+    }
+    return providerModels.get(provider) ?? [];
+  };
+
+  return { providerNames, modelOptions };
+}
+
+/** v2 的 `models --standalone` 回退：共享 daemon 不可用时用它单独起服务。 */
+const OPENCODE_MODEL_ARGS = ['models'] as const;
+const OPENCODE_STANDALONE_ARGS = ['models', '--standalone'] as const;
+
+/** 同步执行 `opencode models`（冷启动路径，仅无快照时一次）。 */
+function loadSync(binary: string): OpencodeConfigResult {
+  // 经 seam 解析真实可执行文件（win32 PATHEXT），cross-spawn 同步执行
+  const resolved = resolveExecutable(binary);
+  if (!resolved) throw new Error('opencode not found');
+  const opts = {
+    encoding: 'utf-8',
+    timeout: OPENCODE_COMMAND.timeoutMs,
+    maxBuffer: OPENCODE_COMMAND.maxBuffer,
+    windowsHide: true,
+  } as const;
+  let res = spawnProcessSync(resolved.file, [...OPENCODE_MODEL_ARGS], opts);
+  if (res.error || res.status !== 0) {
+    res = spawnProcessSync(resolved.file, [...OPENCODE_STANDALONE_ARGS], opts);
+  }
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    throw new Error(`opencode models exited code=${res.status}: ${String(res.stderr).slice(-200)}`);
+  }
+  return parseOpencodeModelsOutput(String(res.stdout));
+}
+
+/** 异步执行 `opencode models`（后台刷新路径，不阻塞事件循环）。 */
+async function loadAsync(binary: string): Promise<OpencodeConfigResult> {
+  // 动态 import：单测 mock 的 platform/spawn 不提供 spawnProcess，静态 import
+  // 会在模块求值时因缺导出报错。异步路径只在后台刷新时走到，测试不触发。
+  const { runTextCommandAsync } = await import('../platform/cli-command.js');
+  const resolved = resolveExecutable(binary);
+  if (!resolved) throw new Error('opencode not found');
+  try {
+    return parseOpencodeModelsOutput(
+      await runTextCommandAsync(resolved.file, [...OPENCODE_MODEL_ARGS], OPENCODE_COMMAND),
+    );
+  } catch {
+    // 共享 daemon 不可用 → v2 standalone 再试一次（与同步路径同语义）
+    return parseOpencodeModelsOutput(
+      await runTextCommandAsync(resolved.file, [...OPENCODE_STANDALONE_ARGS], OPENCODE_COMMAND),
+    );
+  }
+}
+
+/** 统一 SWR 缓存：同步读快照、后台异步刷新（TTL/负缓存口径与旧实现一致）。 */
+const opencodeCatalog = new SyncCatalog<OpencodeConfigResult, string>({
+  agent: 'opencode',
+  key: () => 'opencode',
+  loadSync: (binary) => loadSync(binary),
+  loadAsync: (binary) => loadAsync(binary),
+  fallback: buildFallbackResult,
+  isEmpty: (value) => value.providerNames.length === 0,
+  ttlMs: OPENCODE_CONFIG_CACHE_TTL_MS,
+  negativeTtlMs: OPENCODE_NEGATIVE_CACHE_TTL_MS,
+});
+
+/**
+ * 加载 opencode 配置（同步，卡片构建用）。
+ *
+ * 命中快照直接返回；TTL 过期返回旧清单并在后台刷新；冷启动才同步跑一次
+ * `opencode models`（启动 `warmOpencodeConfigCache` 后生产路径不会走到这里）。
  */
 export function loadOpencodeConfig(binary = 'opencode'): OpencodeConfigResult {
-  const now = Date.now();
+  return opencodeCatalog.read(binary, binary);
+}
 
-  // 正缓存命中：TTL 内不重复 execSync
-  if (
-    opencodeConfigCache?.binary === binary &&
-    now - opencodeConfigCache.timestamp < OPENCODE_CONFIG_CACHE_TTL_MS
-  ) {
-    return opencodeConfigCache.result;
-  }
+/** 显式异步加载（warm / 测试用）：刷新快照并返回结果。 */
+export async function loadOpencodeConfigAsync(binary = 'opencode'): Promise<OpencodeConfigResult> {
+  return opencodeCatalog.refresh(binary, binary);
+}
 
-  // 失败负缓存：命令最近失败过，TTL 内直接用 fallback，不再同步阻塞
-  if (
-    opencodeConfigFailedAt?.binary === binary &&
-    now - opencodeConfigFailedAt.timestamp < OPENCODE_NEGATIVE_CACHE_TTL_MS
-  ) {
-    return buildFallbackResult();
-  }
+/** 启动后台预热：消除首次打开 OpenCode 配置卡时的同步 spawn。 */
+export function warmOpencodeConfigCache(binary = 'opencode'): void {
+  opencodeCatalog.refresh(binary, binary).catch((err: unknown) => {
+    getLogger().warn(`[opencode-config] warm failed: ${(err as Error).message}`);
+  });
+}
 
-  try {
-    // 经 seam 解析真实可执行文件（win32 PATHEXT），cross-spawn 同步执行
-    const resolved = resolveExecutable(binary);
-    if (!resolved) throw new Error('opencode not found');
-    // v2 removed `--verbose`; plain `models` prints one `provider/model` per
-    // line in both v1 and v2. Try the warm shared daemon first (fast); if it is
-    // unavailable, retry with v2's private `--standalone` server.
-    const modelOpts = {
-      encoding: 'utf-8',
-      // 30s → 10s，与 codex/kimi 对齐；maxBuffer 防模型清单 ENOBUFS 隐性截断
-      timeout: 10000,
-      maxBuffer: 64 * 1024 * 1024,
-      windowsHide: true,
-    } as const;
-    let res = spawnProcessSync(resolved.file, ['models'], modelOpts);
-    if (res.error || res.status !== 0) {
-      res = spawnProcessSync(resolved.file, ['models', '--standalone'], modelOpts);
-    }
-    if (res.error) throw res.error;
-    if (res.status !== 0) {
-      throw new Error(
-        `opencode models exited code=${res.status}: ${String(res.stderr).slice(-200)}`,
-      );
-    }
-    const output = String(res.stdout);
-
-    // 按 provider 分组收集模型（只存 model ID，不存 provider/model 完整格式）
-    const providerModels = new Map<string, string[]>();
-
-    // 解析输出：每个模型以 provider/model 格式开头，后面跟着 JSON 块
-    const lines = output.split('\n');
-
-    for (const line of lines) {
-      // 检测模型头如 "opencode/big-pickle" 或 "deepseek/deepseek-chat".
-      // Split on the FIRST slash: some providers expose model IDs that
-      // themselves contain "/" (e.g. openrouter/anthropic/...).
-      const trimmed = line.trim();
-      const slash = trimmed.indexOf('/');
-      if (slash <= 0 || slash === trimmed.length - 1) continue;
-      const providerID = trimmed.slice(0, slash);
-      const modelID = trimmed.slice(slash + 1);
-      if (!/^[a-zA-Z0-9_.-]+$/.test(providerID)) continue;
-      if (/\s/.test(modelID)) continue;
-
-      if (!providerModels.has(providerID)) {
-        providerModels.set(providerID, []);
-      }
-      providerModels.get(providerID)!.push(modelID);
-    }
-
-    const providerNames = Array.from(providerModels.keys()).sort();
-
-    const modelOptions = (provider?: string): string[] => {
-      if (!provider) {
-        // 无 provider 时返回所有 model ID（去重）
-        const allModels = new Set<string>();
-        for (const models of providerModels.values()) {
-          for (const m of models) {
-            allModels.add(m);
-          }
-        }
-        return Array.from(allModels).sort();
-      }
-      return providerModels.get(provider) ?? [];
-    };
-
-    const result = { providerNames, modelOptions };
-    opencodeConfigCache = { binary, result, timestamp: now };
-    opencodeConfigFailedAt = null;
-    return result;
-  } catch (error) {
-    // 如果命令失败，使用 fallback
-    const logger = getLogger();
-    logger.warn(`[opencode-config] failed to load opencode models: ${error}`);
-    opencodeConfigFailedAt = { binary, timestamp: now };
-    return buildFallbackResult();
-  }
+/** 清空缓存（仅供测试使用，生产代码无调用点） */
+export function _invalidateOpencodeConfigCacheForTest(): void {
+  opencodeCatalog.invalidate();
 }
