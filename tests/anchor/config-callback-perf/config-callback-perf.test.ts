@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStubConnector } from '../../lib/bridge-stubs.js';
@@ -18,7 +18,15 @@ import * as configActions from '../../../src/router/actions/config-actions.js';
 import { getConfigBuilder } from '../../../src/router/config/index.js';
 
 const tmpBase = mkdtempSync(path.join(os.tmpdir(), 'config-perf-anchor-'));
+// 断开真实家目录：claude 的 buildFields 会读 ~/.claude/settings.json，若宿主配了
+// 自定义端点，cachedEndpointModels 会真的发网络探测，清单在用例运行中途落地会
+// 让目录签名「有时变有时不变」，补刷断言随宿主环境偶发翻转。CLAUDE_SETTINGS_PATH
+// 只在文件存在时生效（不存在会回落真实 homedir），所以放一份空 settings.json。
+const isolatedSettingsPath = path.join(tmpBase, 'settings.json');
+writeFileSync(isolatedSettingsPath, '{}\n');
+process.env.CLAUDE_SETTINGS_PATH = isolatedSettingsPath;
 afterAll(() => {
+  delete process.env.CLAUDE_SETTINGS_PATH;
   rmSync(tmpBase, { recursive: true, force: true });
 });
 
@@ -189,6 +197,13 @@ describe('/config 打开路径锚点', () => {
             resolve();
           }, 300);
         }),
+    );
+    // 目录「确实变了」用显式 mock 表达：真实链路里签名是否变化取决于宿主
+    // claude 端点清单缓存（见文件顶部的 CLAUDE_SETTINGS_PATH 隔离），不能靠
+    // 环境偶然让补刷分支被走到。基线取第一次（cmdConfig 开卡），消费取第二次。
+    let signatureSeq = 0;
+    vi.spyOn(configActions, 'captureCatalogSignature').mockImplementation(
+      () => `changed-${signatureSeq++}`,
     );
 
     const openCtx = { userId: 'user1', chatId: 'chat1', messageId: 'om-user-msg' };
