@@ -65,10 +65,24 @@ export interface AgentConfigCardBuilder {
   ): Array<{ key: string; value: unknown }>;
 
   /**
-   * 可选的异步预取钩子：卡片渲染前拉取动态选项（如 DSH 的模型/预设目录）。
+   * 强制重取本 agent 的动态目录（provider / 模型 / 预设清单）。
+   *
+   * 卡片渲染是同步的，这里只做后台观测：发卡读缓存快照，观测落地后由 router
+   * 比较 `catalogSignature` 决定是否把新清单刷回已发出的卡片。`force` 为 true
+   * 时绕过冷却（用户点「🔄 刷新模型」）；打开 /config 的自动探测同样为 true。
+   * 失败时抛错，由 router 落日志并保留上次成功清单，不要让下拉框变空。
+   */
+  refreshCatalogs?(options: { force: boolean; config: AppConfig }): Promise<void>;
+
+  /**
+   * DSH 专用的异步预取钩子：卡片渲染前拉取模型/预设目录。
    * host 为该 agent 的当前连接地址；实现内部默认按 host 缓存，`force` 用于
    * 打开 /config 时强制刷新（外部新增 provider 后无需重启）。失败静默回退
-   * 固定兜底，不阻断卡片渲染。非异步预取的 agent 可不实现。
+   * 固定兜底，不阻断卡片渲染。
+   *
+   * 与 `refreshCatalogs()` 的分工：通用目录刷新走 `refreshCatalogs()`；本钩子
+   * 保留 DSH 的 host/token/credentialsFile 参数形状与身份变更副作用，由
+   * `prefetchConfigCardCatalogs` 单独调度，不是新 agent 的接入模板。
    */
   prefetch?(
     host?: string,

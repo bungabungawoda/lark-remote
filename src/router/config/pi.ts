@@ -2,13 +2,21 @@
  * Pi config builder — builds fields and handles field changes for Pi agent.
  */
 
-import { loadPiConfig, getPiModelOptions } from '../../config/pi-config.js';
+import {
+  loadPiConfig,
+  getPiModelOptions,
+  loadPiListedModelsAsync,
+} from '../../config/pi-config.js';
 import { PI_THINKING_LEVELS } from '../../config/index.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import type { AppConfig } from '../../config/index.js';
 import { resetModelPatch } from './common/model-patch.js';
 
 export class PiConfigBuilder implements AgentConfigCardBuilder {
+  async refreshCatalogs(): Promise<void> {
+    await loadPiListedModelsAsync();
+  }
+
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 

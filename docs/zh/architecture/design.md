@@ -1245,7 +1245,8 @@ qoder/codebuddy）共用一个同步读契约：`src/config/catalog-cache.ts` �
   的一次同步加载，其它 hit 值出现 `sync_spawn=true` 即回归。
 
 **新增 agent 接入模板**：目录 loader 必须实现为 `SyncCatalog`（同步读快照 + 异步
-loadAsync），禁止在同步路径 spawn CLI。
+loadAsync），禁止在同步路径 spawn CLI；配置卡 builder 通过 `refreshCatalogs()`
+暴露该 loader 的异步刷新入口（见 §9.29）。
 
 ### 9.28 codex app-server：通知必须按线程归属过滤，子 agent 线程不得污染会话指针
 
@@ -1277,3 +1278,46 @@ rollout 的 `session_meta.session_id` 是**父** id（`thread_source: subagent`�
 `keeps sub-agent thread notifications out of the top-level turn`，fixture
 `tests/fake-app-server/fixtures/subagent-thread-turn.json`（子 agent 的
 `turn/completed` 特意排在主线程收尾之前，复现当时的引爆顺序）。
+
+### 9.29 配置卡目录：先出缓存卡、后台探测、变化才补刷
+
+**约束**：provider / 模型清单的真相源在进程外（CLI 输出、远端目录、端点
+`/models`），观测有成本且可能失败；飞书卡片是发出后不自动更新的一次性 JSON，
+改动只能靠回调 inline 响应体或 `Bridge.patchCard`。一次同步渲染不可能同时零等待
+与绝对新鲜。速度归「发卡」，新鲜归「目录同步」——两者不绑在同一帧。
+
+1. **触发**：只有四处——启动预热、TTL 过期 / 键漂移、打开 `/config`、用户点
+   `config.refresh`。`config.set` / `config.input` 一律 `refreshCatalogs: false`，
+   切换 agent 或 provider 不产生观测。
+2. **观测**：打开 `/config` 在发卡前点火一次异步观测，只给
+   `CONFIG_OPEN_PREFETCH_BUDGET_MS` 预算；超时立即用快照出卡，观测继续在后台跑。
+   各 agent 通过 `AgentConfigCardBuilder.refreshCatalogs()` 接自己的异步 loader；
+   不实现该方法的 agent 没有动态目录。
+3. **收敛**：观测落地后比目录签名，只有不一致才 `scheduleConfigRender()`。判据
+   单源在 `src/router/config/common/catalog-signature.ts`：编码 `buildFields()`
+   产出的 select options（在 `enforceCardBudget` 裁剪之前取），不进时间戳、不进
+   CLI 输出顺序。探测失败保留上次成功清单，签名不变则不补刷——对用户来说
+   「探测失败」与「清单没变」看见的是同一张卡，不为此多付一次 PATCH。所有补刷
+   走 `src/router/actions/config-render.ts` 的串行合并队列，不直接 `patchCard`，
+   避开 230429 单消息更新频限与后到旧帧覆盖新帧。
+4. **显式刷新不回 inline 卡**：被响应体原地替换的那张会被 `refreshConfigCards`
+   的 `excludeMessageId` 跳过；`config.refresh` 只回 toast，让所有卡（含被点击
+   那张）统一走 PATCH。显式点击总是补刷一次作为回执。
+5. **草稿一致性**：新目录不含草稿里的值时，不静默改草稿（保存会写入用户没选过
+   的值）；`buildSelectElement` 在目录非空时追加「（当前，已失效）」选项。目录
+   为空表示没探到清单，保持空下拉走 builder 的 default 语义，不拿孤立的当前值
+   冒充清单。
+6. **键漂移不展示缓存**：旧身份的清单不得冒充新身份（§9.27）。键漂移时
+   `read()` 返回 fallback，首帧不是缓存快照，观测完成后必定补刷。
+7. **刷新按钮**：「🔄 刷新模型」收在第一个分区（当前 agent 配置区）的最底部、
+   分区分隔线之前——刷新重取的是该 agent 的 provider / 模型清单，语义上属于
+   整个配置区，不锚定某个字段。按钮行与表单行同构（左列 weight 2 空 +
+   右列 weight 3），与控件列左右对齐、同宽；裸 `body` 级 button 会占满整行。
+   交互控件直挂 `column/body` 的 `elements`，不套 V1 `action` 容器。显式
+   点击回 toast「正在刷新模型清单…」，失败只落日志——清单没探到时卡片保持
+   原样，与「没变化」不可区分是接受的行为。
+
+**守卫**：`src/router/config/common/catalog-signature.test.ts`（签名判定、刷新
+按钮位置、200861、大目录裁剪后控件保留）、
+`tests/anchor/config-callback-perf/config-callback-perf.test.ts`（目录不变不补刷、
+变化补刷、`config.refresh` 走 PATCH）。

@@ -8,6 +8,14 @@ import { resolveAlias } from '../order/alias-resolve.js';
 import type { AgentKind } from '../agent-kinds.js';
 import type { AgentSessionContentEvent, AgentSessionReader } from '../session-contract.js';
 import { getLogger } from '../logger/index.js';
+import { logConfigPerf } from '../common/config-perf.js';
+
+/** /config 打开时登记的后台目录探测槽位。 */
+interface ConfigOpenRefreshSlot {
+  /** 探测点火前的目录签名；落地后比对，没变化就不补刷卡片。 */
+  before: string;
+  prefetch: Promise<unknown>;
+}
 import type { CloneSession } from '../clone.js';
 import { stripPlaceholders } from '../inbound/placeholder.js';
 import type { SessionDisplayUsage } from '../card/usage-format.js';
@@ -280,6 +288,7 @@ export const DIRECT_RETURN_CMDS: ReadonlySet<string> = new Set([
   'order.textInput',
   'config.set',
   'config.input',
+  'config.refresh',
   'config.save',
   ...APPROVAL_ACTION_CMDS,
 ]);
@@ -323,6 +332,7 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   'order.textInput',
   'config.set',
   'config.input',
+  'config.refresh',
   'config.save',
   // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
   // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
@@ -443,6 +453,7 @@ const CARD_ACTION_SPECS = new Map<string, { method: CardActionMethod; args: Card
   ['order.textInput', { method: 'handleOrderTextInput', args: 'returnCall' }],
   ['config.set', { method: 'enqueueConfigAction', args: 'returnCall' }],
   ['config.input', { method: 'enqueueConfigAction', args: 'returnCall' }],
+  ['config.refresh', { method: 'enqueueConfigAction', args: 'returnCall' }],
   ['config.save', { method: 'enqueueConfigAction', args: 'returnCall' }],
   ['compact', { method: 'handleCompact', args: 'voidCall' }],
   ['resume.compact', { method: 'handleResumeCompact', args: 'voidCall' }],
@@ -578,7 +589,7 @@ export class CommandRouter {
    * 失败路径上槽位会跨命令留存，此时新的预取不得把旧的挤掉（挤掉只是少一次补刷，
    * 但「谁被丢掉」不可预测）。
    */
-  pendingConfigOpenRefresh: Promise<unknown> | undefined;
+  pendingConfigOpenRefresh: ConfigOpenRefreshSlot | undefined;
   /**
    * 已见过的 /config 卡片 messageId（有界，最近的在最后）。
    *
@@ -1442,12 +1453,17 @@ export class CommandRouter {
    * 登记一次 `/c` 的后台目录预取：预取落地且卡片已发出后再补刷一次。
    * 多次登记链在一起，不会互相覆盖。
    */
-  trackConfigOpenRefresh(prefetch: Promise<unknown>): void {
+  trackConfigOpenRefresh(prefetch: Promise<unknown>, before: string): void {
     const previous = this.pendingConfigOpenRefresh;
     const current = prefetch.catch((err: unknown) => {
-      getLogger().warn(`[router] /config 后台目录预取失败: ${(err as Error).message}`);
+      // 失败保留上次成功清单，签名不变则不补刷；这里只落日志。
+      getLogger().warn(`[router] /config 后台模型清单预取失败: ${(err as Error).message}`);
     });
-    this.pendingConfigOpenRefresh = previous ? Promise.all([previous, current]) : current;
+    this.pendingConfigOpenRefresh = {
+      // 连开多次 /c 时保留最早的基线：期间任何一次目录变化都该补刷。
+      before: previous?.before ?? before,
+      prefetch: previous ? Promise.all([previous.prefetch, current]) : current,
+    };
   }
 
   /**
@@ -1455,11 +1471,23 @@ export class CommandRouter {
    * 提前消费会用无上下文命令的时机触发一次空刷。
    */
   private consumeConfigOpenRefresh(ctx: CommandContext): void {
-    const openRefresh = this.pendingConfigOpenRefresh;
-    if (!openRefresh) return;
+    const slot = this.pendingConfigOpenRefresh;
+    if (!slot) return;
     this.pendingConfigOpenRefresh = undefined;
-    // 预取落地后再刷一次：新卡此时已登记，能拿到最新目录。
-    void openRefresh.then(() => {
+    // 预取落地后比一次目录签名：清单没变就一次 PATCH 都不发。稳态下省掉
+    // 最多 5 张卡的网络写，也避开飞书 230429 单消息更新频限。
+    void slot.prefetch.then(() => {
+      const after = configActions.captureCatalogSignature(this);
+      if (after === slot.before) {
+        logConfigPerf('render', {
+          skipped: true,
+          merged: 0,
+          patches: 0,
+          t_build_ms: 0,
+          t_patch_ms: 0,
+        });
+        return;
+      }
       this.scheduleConfigRender({
         ctx,
         refreshCatalogs: false,

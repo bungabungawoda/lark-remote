@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,8 @@ import { countCardComponents, MAX_CARD_COMPONENTS } from '../../../src/card/card
 import { buildConfigCardFromTabs } from '../../../src/router/config/common/render.js';
 import type { ConfigTab } from '../../../src/router/config/common/render.js';
 import * as probeModule from '../../../src/runner/probe.js';
+import * as configActions from '../../../src/router/actions/config-actions.js';
+import { getConfigBuilder } from '../../../src/router/config/index.js';
 
 const tmpBase = mkdtempSync(path.join(os.tmpdir(), 'config-perf-anchor-'));
 afterAll(() => {
@@ -163,6 +165,9 @@ describe('/config 打开路径锚点', () => {
   beforeEach(() => {
     vi.spyOn(probeModule, 'probeAllAgents').mockResolvedValue(new Map());
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it('/c 目录预取超预算也立即出卡，deferred 后台渲染不把用户消息登记为 config 卡', async () => {
     const { router, connector } = makeFixture('open');
 
@@ -213,6 +218,11 @@ describe('/config 打开路径锚点', () => {
 
   it('连开两次 /c：两次 deferred 预取各自落地后补刷，合并成一次 PATCH', async () => {
     const { router, connector } = makeFixture('open-chain');
+    // 目录签名只在 router 消费槽位时读（cmdConfig 取基线走模块内直接调用）。
+    // 让消费端看到清单变化，才能验证「两次变化合并成一次 PATCH」；目录没变时
+    // 不补刷的行为由 config-catalog-refresh.test.ts 单独守。
+    let seq = 0;
+    vi.spyOn(configActions, 'captureCatalogSignature').mockImplementation(() => `changed-${seq++}`);
     const releases: Array<() => void> = [];
     vi.spyOn(router, 'prefetchConfigCardCatalogs').mockImplementation(
       () =>
@@ -241,9 +251,82 @@ describe('/config 打开路径锚点', () => {
   it('目录预取槽位只在 /config 卡片发出后消费（无关命令的回复不算就位）', async () => {
     const { router } = makeFixture('open-slot');
     // 直接摆一个待消费的槽位：模拟「/config 的预取已登记、卡片还没发出」。
-    router.pendingConfigOpenRefresh = Promise.resolve();
+    router.pendingConfigOpenRefresh = { before: 'baseline', prefetch: Promise.resolve() };
     await router.handle('/status', { ...ctx, messageId: 'om-status-msg' });
     expect(router.pendingConfigOpenRefresh).toBeDefined();
+  });
+
+  it('目录探测只在 force 时调 builder.refreshCatalogs，保存路径不 spawn CLI', async () => {
+    const { router } = makeFixture('catalog-contract');
+    const builder = getConfigBuilder(router.config.defaultAgent ?? 'claude');
+    const spy = vi.spyOn(builder, 'refreshCatalogs').mockResolvedValue();
+
+    await configActions.prefetchConfigCardCatalogs(router, true);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // config.save 后台队列带 refreshCatalogs=true 但 force=false，不该为每次
+    // 保存都重探目录。
+    spy.mockClear();
+    await configActions.prefetchConfigCardCatalogs(router, false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('目录没变化：deferred 预取落地后一次 PATCH 都不发', async () => {
+    const { router, connector } = makeFixture('catalog-no-change');
+    // consume 端读到的签名与基线一致；cmdConfig 取基线走模块内直接调用，
+    // 不受这个 spy 影响。stub 的预取立即完成，不会另建槽位。
+    vi.spyOn(configActions, 'captureCatalogSignature').mockReturnValue('fixed');
+    vi.spyOn(router, 'prefetchConfigCardCatalogs').mockResolvedValue();
+    router.pendingConfigOpenRefresh = { before: 'fixed', prefetch: Promise.resolve() };
+
+    await router.handle('/config', { ...ctx, messageId: 'om-user-msg' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await router.flushConfigRender();
+
+    expect(connector._updates.length).toBe(0);
+    expect(router.configCardIds.has('om-user-msg')).toBe(false);
+  });
+
+  it('目录变化：deferred 预取落地后补刷全部已登记卡片', async () => {
+    const { router, connector } = makeFixture('catalog-changed');
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      { ...ctx, messageId: 'om-config-old' },
+    );
+    await router.flushConfigRender();
+    connector._updates.length = 0;
+
+    vi.spyOn(configActions, 'captureCatalogSignature').mockReturnValue('new-signature');
+    vi.spyOn(router, 'prefetchConfigCardCatalogs').mockResolvedValue();
+    router.pendingConfigOpenRefresh = { before: 'old-signature', prefetch: Promise.resolve() };
+
+    await router.handle('/config', { ...ctx, messageId: 'om-user-msg' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await router.flushConfigRender();
+
+    const patched = connector._updates.map((u) => u.messageId);
+    expect(patched).toContain('om-config-old');
+    expect(patched).toContain('msg-id');
+    // 用户文本消息永远不能被 PATCH 成配置卡。
+    expect(patched).not.toContain('om-user-msg');
+  });
+
+  it('config.refresh 只回 toast，被点击的那张卡也走 PATCH 拿到新目录', async () => {
+    const { router, connector } = makeFixture('catalog-refresh-action');
+    // 禁止真 spawn / 真网络：显式刷新只验证卡片调度。
+    vi.spyOn(router, 'prefetchConfigCardCatalogs').mockResolvedValue();
+
+    const response = await router.handleCardAction(
+      { cmd: 'config.refresh' },
+      { ...ctx, messageId: 'om-refresh-card' },
+    );
+    expect(response).toMatchObject({ toast: { type: 'info' } });
+    // 回 inline 卡会被 refreshConfigCards 的 excludeMessageId 跳过。
+    expect((response as { card?: unknown } | undefined)?.card).toBeUndefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await router.flushConfigRender();
+    expect(connector._updates.map((u) => u.messageId)).toContain('om-refresh-card');
   });
 
   it('直写路径 /config key value 仍立即写盘（行为不变锚点）', async () => {

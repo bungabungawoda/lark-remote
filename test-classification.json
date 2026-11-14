@@ -54,6 +54,7 @@
     "src/router/config/config-builder.test.ts",
     "src/router/config/config-card-controls.test.ts",
     "src/router/config/common/model-patch.test.ts",
+    "src/router/config/common/catalog-signature.test.ts",
     "src/router/update-command.test.ts",
     "src/router/codebuddy-config-refresh.test.ts",
     "src/router/commands/ls.test.ts",

@@ -9,7 +9,7 @@ import {
   getModelOptionsFromSettings,
   resolveClaudeSettingsPath,
 } from '../../config/index.js';
-import { cachedEndpointModels } from '../../config/endpoint-models.js';
+import { cachedEndpointModels, forceEndpointModels } from '../../config/endpoint-models.js';
 import { MODEL_ALIAS_TO_ID, MODEL_ID_TO_ALIAS } from '../../model-catalog.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import type { AppConfig } from '../../config/index.js';
@@ -36,6 +36,12 @@ const PERMISSION_MODE_OPTIONS = CLAUDE_PERMISSION_MODES.filter((m) => m !== 'man
 }));
 
 export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
+  async refreshCatalogs(): Promise<void> {
+    const settingsPath = resolveClaudeSettingsPath();
+    const endpoint = settingsPath ? getClaudeSettingsEndpoint(settingsPath) : undefined;
+    if (endpoint) await forceEndpointModels({ ...endpoint, anthropic: true });
+  }
+
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 

@@ -140,8 +140,8 @@ export class CodebuddyConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
     // 目录冷路径在这里点火：buildFields 是同步契约（kimi 的 buildFields 同样
     // 在内联 spawn 探测），本次渲染用缓存/兜底：缓存过期也先用上次成功快照
-    // （stale-while-revalidate），探针完成后下一次渲染换新；只有从未成功
-    // 探测过才回退文本输入。启动时 initializeRunner 已预热，`/config` 打开
+    // （stale-while-revalidate），探针落地后由 router 按目录签名补刷卡片
+    // （§9.29）；只有从未成功探测过才回退文本输入。启动时 initializeRunner 已预热，`/config` 打开
     // 时 router 层还会先 await 一次按账号指纹的刷新（见
     // prefetchConfigCardCatalogs），常态下这里是纯缓存读。fire-and-forget：
     // 不阻塞卡片，失败保留上次目录。

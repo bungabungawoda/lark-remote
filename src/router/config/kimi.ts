@@ -7,6 +7,7 @@
 
 import {
   loadKimiConfig,
+  loadKimiConfigAsync,
   KIMI_THINKING_EFFORTS,
   FALLBACK_EFFORTS,
   type KimiThinkingEffort,
@@ -24,6 +25,10 @@ const PERMISSION_MODE_OPTIONS: SelectOption[] = [
 ];
 
 export class KimiConfigBuilder implements AgentConfigCardBuilder {
+  async refreshCatalogs(): Promise<void> {
+    await loadKimiConfigAsync();
+  }
+
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 

@@ -47,12 +47,27 @@ import {
 } from './shared.js';
 import type { ConfigSwitchResult } from './shared.js';
 import { scheduleConfigRender } from './config-render.js';
+import { catalogSignature } from '../config/common/catalog-signature.js';
 import { logConfigPerf, ConfigPerfSpan } from '../../common/config-perf.js';
 
 export function ensurePendingConfig(host: CommandRouter): void {
   if (!host.pendingConfig) {
     host.pendingConfig = structuredClone(host.config);
   }
+}
+
+/**
+ * 目录基线：编码「当前卡片上用户能看到的全部下拉选项」+ 探测失败状态。
+ *
+ * 在后台探测**点火之前**取一次、落地之后取一次，两者一致就不补刷卡片。
+ * 取的是 `buildFields()` 的字段描述符，不是渲染后的卡片 JSON：不受
+ * `enforceCardBudget` 裁剪影响，也不含 CLI 输出顺序与内部时间戳。
+ */
+export function captureCatalogSignature(host: CommandRouter): string {
+  const displayConfig = host.pendingConfig ?? host.config;
+  const agent = displayConfig.defaultAgent ?? 'claude';
+  const fields = getConfigBuilder(agent).buildFields(displayConfig);
+  return catalogSignature(fields);
 }
 
 /**
@@ -103,7 +118,8 @@ function budgetConfigCard(card: object, where: 'inline' | 'patch'): object {
  *
  * `excludeMessageId` 是刚被响应体替换的那张，跳过避免同消息重复 PATCH 触发
  * 飞书 230429。注意：它同时意味着这张卡不会拿到本轮刷新后的目录（如 DSH 新增
- * provider），下一次点击会补齐——最终一致，不做二次 PATCH。
+ * provider），下一次点击会补齐——最终一致，不做二次 PATCH。`config.refresh`
+ * 是例外：它不回 inline 卡片，让所有卡（含被点击那张）统一走这一条 PATCH 路径。
  */
 export async function refreshConfigCards(
   host: CommandRouter,
@@ -238,6 +254,23 @@ export async function dispatchConfigAction(
         return;
       }
       return host.applyConfigFieldChange(key, newValue, ctx);
+    }
+    case 'config.refresh': {
+      host.ensurePendingConfig();
+      // 不回 inline 卡片：被响应体原地替换的那张会被 refreshConfigCards 的
+      // excludeMessageId 跳过，用户点了刷新、自己这张卡反而拿不到新目录。
+      // 统一走后台 PATCH；显式点击总要补刷一次，给用户一个确定的回执。
+      void host
+        .prefetchConfigCardCatalogs(true, ctx)
+        .catch((err: unknown) => {
+          // 失败保留上次成功清单，签名不变则不补刷；这里只落日志。
+          getLogger().warn(`[router] config 模型清单刷新失败: ${(err as Error).message}`);
+        })
+        .then(() => {
+          scheduleConfigRender(host, { ctx, refreshCatalogs: false });
+          logConfigPerf('render', { trigger: 'user', patches: 0 });
+        });
+      return { toast: { type: 'info', content: '正在刷新模型清单…' } };
     }
     case 'config.save': {
       // 批量保存：将 pendingConfig 一次性写入磁盘
@@ -494,8 +527,13 @@ export async function cmdConfig(
   await probeAllAgents();
   span.segment('probe');
 
-  // 动态清单预取：DSH 模型/预设目录、CodeBuddy 模型目录。
-  // 只给一个短预算，超时立即用缓存/兜底清单出卡，后台继续刷新并合并渲染一次
+  // 后台探测点火前先取目录基线：探测完成后比一次签名，只有清单真的变了才
+  // 补刷卡片。必须在点火前取，否则基线里可能已经混进新清单。
+  const beforeSignature = captureCatalogSignature(host);
+  span.segment('signature');
+
+  // 动态清单探测：所有 agent 的 provider / 模型目录 + DSH/CodeBuddy 的既有预取。
+  // 只给一个短预算，超时立即用缓存/兜底清单出卡，后台继续跑并合并渲染一次
   // （飞书卡片回调 3 秒上限；打开 /config 不该被 RPC/探针拖住）。
   const prefetch = host.prefetchConfigCardCatalogs(true, ctx);
   const prefetchDone = Symbol('prefetch-done');
@@ -508,7 +546,8 @@ export async function cmdConfig(
   if (deferred) {
     // 交给 router 在卡片发送并登记之后接上刷卡片（见 trackConfigOpenRefresh）：
     // 预取先于发卡落地时，新卡还没进 configCardIds，这里直接调度会漏掉它。
-    host.trackConfigOpenRefresh(prefetch);
+    // 基线一起带过去：目录没变化就一次 PATCH 都不发。
+    host.trackConfigOpenRefresh(prefetch, beforeSignature);
   }
   logConfigPerf('open', {
     agent: host.config.defaultAgent,
@@ -573,6 +612,8 @@ export async function cmdConfig(
 /**
  * 卡片构建前的动态清单预取。
  *
+ * - **全 agent**：`force` 时走 builder 的 `refreshCatalogs()`，后台重探 provider /
+ *   模型目录；清单没变就不补刷卡片（目录签名见 `catalog-signature.ts`）。
  * - **DSH**：`/config` 打开时强制刷新模型/预设目录，Web UI 刚新增的 provider
  *   立即可见；失败回退固定兜底清单。
  * - **CodeBuddy**：模型清单只随 ACP `session/new` 下发，且目录是
@@ -588,25 +629,52 @@ export async function prefetchConfigCardCatalogs(
   force = false,
   ctx?: CommandContext,
 ): Promise<void> {
+  const tasks: Array<Promise<void>> = [];
+
   if (host.config.defaultAgent === 'codebuddy') {
-    const cbConf = getAgentConfig(host.config, 'codebuddy');
-    const outcome = await refreshCodebuddyCatalogForConfig({
-      binary: cbConf?.acp?.binary,
-      env: cbConf?.env,
-      hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
-    });
-    if (outcome.identityChanged && ctx) host.bridge.resetCodebuddyRuntime(ctx.userId);
-    return;
+    tasks.push(
+      (async () => {
+        const cbConf = getAgentConfig(host.config, 'codebuddy');
+        const outcome = await refreshCodebuddyCatalogForConfig({
+          binary: cbConf?.acp?.binary,
+          env: cbConf?.env,
+          hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
+        });
+        if (outcome.identityChanged && ctx) host.bridge.resetCodebuddyRuntime(ctx.userId);
+      })(),
+    );
+  } else if (host.config.defaultAgent === 'dsh') {
+    tasks.push(
+      (async () => {
+        const dshBuilder = getConfigBuilder('dsh');
+        const dshConf = getAgentConfig(host.config, 'dsh');
+        const credentialsFile =
+          dshConf?.credentialsFile?.trim() ||
+          (dshConf?.dshHome?.trim()
+            ? resolveDshCredentialsFile(process.env, dshConf.dshHome)
+            : undefined);
+        await dshBuilder.prefetch?.(dshConf?.host, dshConf?.token, credentialsFile, { force });
+      })(),
+    );
   }
-  if (host.config.defaultAgent !== 'dsh') return;
-  const builder = getConfigBuilder('dsh');
-  const dshConf = getAgentConfig(host.config, 'dsh');
-  const credentialsFile =
-    dshConf?.credentialsFile?.trim() ||
-    (dshConf?.dshHome?.trim()
-      ? resolveDshCredentialsFile(process.env, dshConf.dshHome)
-      : undefined);
-  await builder.prefetch?.(dshConf?.host, dshConf?.token, credentialsFile, { force });
+
+  // 只在显式触发（打开 /config、点刷新）时重探。config.save 后台队列也会带
+  // refreshCatalogs=true 调到这里，但 force=false，不该为每次保存都 spawn CLI。
+  if (force) {
+    const displayConfig = host.pendingConfig ?? host.config;
+    const builder = getConfigBuilder(displayConfig.defaultAgent ?? 'claude');
+    if (builder.refreshCatalogs) {
+      tasks.push(builder.refreshCatalogs({ force, config: displayConfig }));
+    }
+  }
+
+  const results = await Promise.allSettled(tasks);
+  const failures = results.filter(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  for (const failure of failures) {
+    getLogger().warn(`[router] config 模型清单探测失败: ${(failure.reason as Error).message}`);
+  }
 }
 
 export function buildConfigCard(host: CommandRouter): CommandResult {
