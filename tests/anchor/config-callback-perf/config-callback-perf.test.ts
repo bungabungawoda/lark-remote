@@ -239,13 +239,18 @@ describe('/config 打开路径锚点', () => {
 
     // 第一次预取落地：它的补刷必须已在队列里（不能因为第二次 /c 开了新槽位就丢）。
     releases[0]!();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // slot.prefetch 被 catch/Promise.all 包过，链有多跳；setImmediate 等微任务全部排空，不依赖真实计时。
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(router.configRenderState.pending).toBeDefined();
 
     // 第二次落地落进同一个合并窗口：连开两次只扇出一次 PATCH。
     releases[1]!();
     await router.flushConfigRender();
     expect(connector._updates.map((u) => u.messageId)).toEqual(['msg-id']);
+    // 第二次落地的消费链可能在 flush 之后才排空并另排一次渲染，收尾排空再冲，
+    // 避免把 250ms debounce 定时器泄进后续用例。
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await router.flushConfigRender();
   });
 
   it('目录预取槽位只在 /config 卡片发出后消费（无关命令的回复不算就位）', async () => {
@@ -280,7 +285,6 @@ describe('/config 打开路径锚点', () => {
     router.pendingConfigOpenRefresh = { before: 'fixed', prefetch: Promise.resolve() };
 
     await router.handle('/config', { ...ctx, messageId: 'om-user-msg' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     await router.flushConfigRender();
 
     expect(connector._updates.length).toBe(0);
@@ -301,7 +305,6 @@ describe('/config 打开路径锚点', () => {
     router.pendingConfigOpenRefresh = { before: 'old-signature', prefetch: Promise.resolve() };
 
     await router.handle('/config', { ...ctx, messageId: 'om-user-msg' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     await router.flushConfigRender();
 
     const patched = connector._updates.map((u) => u.messageId);
@@ -324,7 +327,6 @@ describe('/config 打开路径锚点', () => {
     // 回 inline 卡会被 refreshConfigCards 的 excludeMessageId 跳过。
     expect((response as { card?: unknown } | undefined)?.card).toBeUndefined();
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
     await router.flushConfigRender();
     expect(connector._updates.map((u) => u.messageId)).toContain('om-refresh-card');
   });
