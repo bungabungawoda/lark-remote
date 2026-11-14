@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-11-14
+
+### 性能
+
+- **`/config` 模型清单先出缓存、后台探测、有变化才补刷**：打开配置卡或点「🔄 刷新模型」时，各 agent 的 provider / 模型清单在后台重探；卡片先用缓存快照发出，只有清单签名（用户可见的下拉选项）变了才把新清单 PATCH 到已交互过的配置卡，没变时零网络写，稳态省掉最多 5 张卡的网络写并避开飞书单消息更新频限（230429）。切换 agent / provider 与保存配置都不产生探测；探测失败保留上次成功清单；清单刷新后草稿里的值若已不在新清单中，下拉追加「（当前，已失效）」选项，不静默改写草稿
+
+### 变更
+
+- **「🔄 刷新模型」按钮布局**：刷新按钮改名刷新模型并紧跟模型下拉，按钮行与下拉框同宽对齐（左 2 空 + 右 3 列）；位置移到 agent 配置区最底部（思考级别之下），去掉目录状态行
+
+### 测试
+
+- 新增目录签名守卫（选项顺序与字段顺序不影响签名、显示文本变化判定）与刷新按钮位置、大目录预算裁剪锚点用例；删掉补刷用例对真实 20ms 等待的依赖，改由 `flushConfigRender` 强制冲刷
+
 ## [0.7.2] - 2026-11-13
 
 ### 性能
