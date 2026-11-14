@@ -113,14 +113,18 @@ function contextWindowFields(contextWindow: number | undefined): ConfigField[] {
 }
 
 export class QoderConfigBuilder implements AgentConfigCardBuilder {
+  async refreshCatalogs(options: { config: AppConfig }): Promise<void> {
+    await refreshQoderConfig(options.config.agents?.qoder?.cli?.binary ?? undefined);
+  }
+
   buildFields(displayConfig: AppConfig): ConfigField[] {
     // binary 随配置（CN 版 qodercn / 国际版 qoder）——loader 探测的命令必须
     // 与 runner 实际 spawn 的一致，否则 --list-models 永远打不到已装的 CLI。
     const binary = displayConfig.agents?.qoder?.cli?.binary;
     // 目录刷新在后台点火，卡片本帧只读缓存（stale-while-revalidate）。
     // 同步探测单次 4–6s（`--reasoning-effort off -p ""`），会堵住事件循环
-    // 让卡片回调超过飞书 3 秒上限；缓存冷时本帧回退文本输入，探针完成后
-    // 下一次渲染换成下拉。启动时 warmQoderConfigCache 已预热，常态纯缓存读。
+    // 让卡片回调超过飞书 3 秒上限；缓存冷时本帧回退文本输入，探针落地后由
+    // router 按目录签名补刷成下拉（§9.29）。启动时预热，常态纯缓存读。
     void refreshQoderConfig(binary).catch(() => {});
     const qCfg = loadQoderConfig(binary);
     const q = displayConfig.agents?.qoder;

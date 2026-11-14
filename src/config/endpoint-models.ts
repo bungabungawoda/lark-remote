@@ -292,8 +292,9 @@ export async function fetchEndpointModels(target: EndpointModelsTarget): Promise
 /**
  * 同步读缓存，顺便在未命中时踢一次后台探测。
  *
- * 卡片构建是同步的：拿不到就返回 undefined（调用方保持原列表），探测结果在
- * 下一次打开卡片时生效。冷却期内（含失败）不重复踢。
+ * 卡片构建是同步的：拿不到就返回 undefined（调用方保持原列表）。探测落地后
+ * 由 router 比目录签名决定是否补刷卡片（§9.29），本模块不碰视图；冷却期内
+ * （含失败）不重复踢。显式刷新走 `forceEndpointModels` 绕过冷却。
  */
 export function cachedEndpointModels(target: EndpointModelsTarget): string[] | undefined {
   const key = cacheKey(target);
@@ -309,6 +310,18 @@ export function warmEndpointModels(target: EndpointModelsTarget): void {
   const key = cacheKey(target);
   if (!key || freshEntry(key)) return;
   void probe(target, key);
+}
+
+/**
+ * 配置卡「刷新模型」：绕过成功/失败冷却重探一次。
+ *
+ * 仍走 `probe` 的按 key 单飞——已有一轮探测在跑时复用它，不并发发请求。
+ * 探测失败落负缓存但清单不变，调用方按目录签名判定后不会补刷卡片。
+ */
+export async function forceEndpointModels(target: EndpointModelsTarget): Promise<string[] | null> {
+  const key = cacheKey(target);
+  if (!key) return null;
+  return probe(target, key);
 }
 
 /** Test utility: drop every cached list and in-flight probe. */

@@ -11,8 +11,10 @@
  * - `event=apply` 的 `patches_in_callback=0`：回调链内没有网络写（刀 1）。
  * - `event=catalog` 的 `sync_spawn`：只允许在 `hit=cold`（冷启动唯一的一次同步
  *   加载）为 true；其它 hit 值出现 true 即刀 2 回归。
- * - `event=render` 的 `merged`：连点被合并的渲染次数（刀 1）。
- * - `event=open` 的 `prefetch_deferred`：/c 是否等满了目录预取（刀 3）。
+ * - `event=render` 的 `merged`：连点被合并的渲染次数（刀 1）；`skipped=true`
+ *   表示目录签名未变、本次后台补刷被短路（0 次 PATCH）。
+ * - `event=open` 的 `prefetch_deferred`：/c 是否等满了目录预取（刀 3）；
+ *   `t_signature_ms` 是点火前取目录基线的耗时。
  * - `event=flush`：仅会话变更动作（钉单列，不进 callback 重复计数）。
  */
 import { getLogger } from '../logger/index.js';

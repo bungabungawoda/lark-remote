@@ -2,7 +2,7 @@
  * OpenCode config builder — builds fields and handles field changes for OpenCode agent.
  */
 
-import { loadOpencodeConfig } from '../../config/opencode-config.js';
+import { loadOpencodeConfig, loadOpencodeConfigAsync } from '../../config/opencode-config.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 import { resetModelPatch } from './common/model-patch.js';
@@ -21,6 +21,10 @@ function withCurrent<T>(options: T[], current: T | undefined): T[] {
 }
 
 export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
+  async refreshCatalogs(options: { config: AppConfig }): Promise<void> {
+    await loadOpencodeConfigAsync(options.config.agents?.opencode?.acp?.binary ?? undefined);
+  }
+
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 

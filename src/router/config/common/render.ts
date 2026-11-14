@@ -71,13 +71,25 @@ function resolveSelectedValue(field: ConfigField, currentValue: unknown): string
 
 function buildSelectElement(field: ConfigField, currentValue: unknown): object {
   const selectedValue = resolveSelectedValue(field, currentValue);
+  const options = field.options!.map((opt) => ({
+    text: { tag: 'plain_text', content: optionText(opt) },
+    value: optionValue(opt),
+  }));
+  // 目录刷新后草稿里的值可能已不在新清单里。不静默改草稿（保存会写入用户
+  // 没选过的值），也别让 initial_option 指向一个不存在的选项；把当前值作为
+  // 显式标注的兜底选项留在下拉里，由用户决定要不要重选。
+  // 目录为空表示「没探到清单」，此时不能拿一个孤立的当前值冒充清单本身：
+  // 空下拉要继续走 builder 的 default 语义（codex 档位目录为空时即如此）。
+  if (selectedValue && options.length > 0 && !options.some((opt) => opt.value === selectedValue)) {
+    options.unshift({
+      text: { tag: 'plain_text', content: `${selectedValue}（当前，已失效）` },
+      value: selectedValue,
+    });
+  }
   return fieldRow(field.label, {
     tag: 'select_static',
     placeholder: { tag: 'plain_text', content: '请选择' },
-    options: field.options!.map((opt) => ({
-      text: { tag: 'plain_text', content: optionText(opt) },
-      value: optionValue(opt),
-    })),
+    options,
     initial_option: selectedValue,
     behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: field.key } }],
   });
@@ -108,19 +120,52 @@ function buildInputElement(field: ConfigField, currentValue: unknown): object {
   });
 }
 
+/**
+ * 刷新按钮行：与表单行同构（左列 weight 2 + 右列 weight 3），与上方控件列
+ * 左右对齐、同宽。裸 `body` 级 button 占满整行。左列放一个空格 `plain_text`
+ * 占位，不用空 `lark_md`（空内容未验证过）。
+ */
+function refreshButtonRow(): object {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 2,
+        vertical_align: 'center',
+        elements: [{ tag: 'div', text: { tag: 'plain_text', content: ' ' } }],
+      },
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 3,
+        vertical_align: 'center',
+        elements: [cardButton('🔄 刷新模型', { cmd: 'config.refresh' }, { type: 'default' })],
+      },
+    ],
+  };
+}
+
 /** Build the full CardKit 2.0 card from tabs. */
 export function buildConfigCardFromTabs(tabs: ConfigTab[], displayConfig: AppConfig): object {
   const elements: object[] = [];
-  for (const tab of tabs) {
-    const fieldElements = buildFieldElements(tab.fields, displayConfig);
+  tabs.forEach((tab, tabIndex) => {
     // Section header - bold markdown
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${tab.label}**` } });
     // Section fields
-    elements.push(...fieldElements);
+    elements.push(...buildFieldElements(tab.fields, displayConfig));
+    // 刷新按钮行收在第一个 tab（当前 agent 配置区）的最底部、分区分隔线之前：
+    // 刷新重取的是该 agent 的 provider / 模型清单，语义上属于整个配置区，
+    // 不锚定某个字段。交互控件直挂 column/body 的 elements：CardKit 2.0
+    // 不允许 V1 `action` 容器（200861）。
+    if (tabIndex === 0) {
+      elements.push(refreshButtonRow());
+    }
     elements.push({ tag: 'hr' });
-  }
+  });
 
-  // 底部保存按钮
   elements.push(cardButton('💾 保存所有修改', { cmd: 'config.save' }, { type: 'primary' }));
 
   return {

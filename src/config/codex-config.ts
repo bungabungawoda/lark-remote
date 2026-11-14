@@ -18,6 +18,7 @@ import { SyncCatalog } from './catalog-cache.js';
 import {
   cachedEndpointModels,
   warmEndpointModels,
+  forceEndpointModels,
   type EndpointModelsTarget,
 } from './endpoint-models.js';
 
@@ -409,6 +410,18 @@ function endpointModelsOf(config: unknown): string[] | undefined {
  * `codex debug models` 的同步 spawn 拉进来。
  */
 export function warmCodexEndpointModels(codexHome?: string): void {
+  void probeCodexEndpointModels(codexHome, false);
+}
+
+/** 配置卡「刷新模型」：绕过冷却重探自定义 provider 的清单。 */
+export async function refreshCodexEndpointModels(codexHome?: string): Promise<void> {
+  await probeCodexEndpointModels(codexHome, true);
+}
+
+async function probeCodexEndpointModels(
+  codexHome: string | undefined,
+  force: boolean,
+): Promise<void> {
   const home = resolveCodexHome(codexHome);
   if (isCodexCatalogMode(home)) return; // catalog 模式不替换列表，探了也用不上
   const toml = readCodexToml(home);
@@ -417,7 +430,9 @@ export function warmCodexEndpointModels(codexHome?: string): void {
   const name = extractCustomProvider(providers);
   if (!name) return;
   const target = endpointTargetOf(providers[name]);
-  if (target) warmEndpointModels(target);
+  if (!target) return;
+  if (force) await forceEndpointModels(target);
+  else warmEndpointModels(target);
 }
 
 /** config.toml 的 `model_providers` 表（缺失或形状不对时空对象）。 */

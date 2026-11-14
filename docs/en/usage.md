@@ -253,13 +253,15 @@ Each agent's (claude/codex/opencode/pi/kimi/dsh/codebuddy/qoder) conversation ha
 - Dropdowns and inputs on the card only change a **draft**; click the 💾 save button to write it to disk. Re-opening the card with `/config` reuses the same draft.
 - The draft is pushed to every recently interacted config card, so an older card never shows values that differ from what saving would submit.
 - To skip the card, write a value directly with `/config <key> <value>`; it lands on disk and takes effect immediately, e.g. `/config claude.model haiku` or `/config pi.thinking max`. The `pi.` / `codex.` / `opencode.` / `kimi.` prefixes are mapped to `agents.<name>.`, and a full path such as `agents.pi.model` works too.
+- The "🔄 Refresh Models" button at the bottom of the current agent's config section re-reads the providers and models currently available. Click it after changing an agent's model configuration, switching accounts, or adding a provider: lark-remote probes in the background and updates the card only when the list actually changed.
+- Opening `/config` also probes once in the background: the card appears immediately from the cache and is updated only if the probe returns a different list. Switching the agent or provider is unaffected and replies at the same speed.
 - When a model dropdown is long (providers often list hundreds of models), the card is trimmed to fit Feishu's component budget and a hint at the top reports how many options were omitted; the trimmed models can still be set with the direct-write form above.
 
 #### `/stop`: Terminating a Process
 
 `/stop` uses a dedicated control channel and will not queue behind the current Claude run. It calls `runner.stop({ immediate: true })`: SIGTERM followed immediately by SIGKILL, **no grace wait** (`stopGraceMs` only serves the idle-timeout auto-stop path, default 5s, not user-adjustable). The "⏹ Stop" button on the run card behaves identically.
 
-#### `/restart`: Restarting the Bridge
+#### `/restart`: Restarting lark-remote
 
 `/restart` restarts lark-remote in place: while the old process still holds the lock, it spawns a detached successor (inheriting the same command-line arguments, i.e., the same `--config-dir`), replies with "♻️ lark-remote restarting (new process pid N), startup notification will arrive shortly...", then exits cleanly and releases the singleton lock; the new process waits for the old one to die before acquiring the lock normally (waits up to 20s; on timeout it still attempts to acquire — if the old process is truly still alive, it will hit the lock and exit, so two instances cannot coexist). After restart completes, a startup notification is sent to the most recent private chat contact.
 

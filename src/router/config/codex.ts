@@ -6,6 +6,8 @@ import {
   loadCodexConfig,
   getReasoningEffortOptions,
   getDefaultReasoningEffort,
+  loadCodexCatalogModelsAsync,
+  refreshCodexEndpointModels,
 } from '../../config/codex-config.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
@@ -13,6 +15,12 @@ import { pickMiddleValue, resetModelPatch } from './common/model-patch.js';
 import { turnIdleTimeoutField } from './common/turn-idle.js';
 
 export class CodexConfigBuilder implements AgentConfigCardBuilder {
+  async refreshCatalogs(): Promise<void> {
+    // 两种目录互斥（catalog 模式不读自定义端点），都探一次代价很低：
+    // 不匹配的那条会在入口短路，不 spawn、不发请求。
+    await Promise.all([loadCodexCatalogModelsAsync(), refreshCodexEndpointModels()]);
+  }
+
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 
