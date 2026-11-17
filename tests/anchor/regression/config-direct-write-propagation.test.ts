@@ -100,17 +100,4 @@ describe('/config 直写路径运行时传播 (anchor)', () => {
     await router.handle('/config defaultAgent codex', ctx);
     expect(spy).toHaveBeenCalled(); // 现状：未被调用 → RED
   });
-
-  /**
-   * 验证什么（target）:
-   *   `/config pi.model X`（defaultAgent=pi）直写后必须 syncAgentChoices 并落盘，
-   *   agentChoices.pi 不陈旧。旧实现直写路径完全没有 syncAgentChoices。
-   */
-  it('anchor: /config pi.model 直写后 agentChoices 同步落盘', async () => {
-    const { router, configPath } = createRouter({ defaultAgent: 'pi' });
-    await router.handle('/config pi.model p-model-42', ctx);
-    const disk = fs.readFileSync(configPath, 'utf-8');
-    expect(disk).toContain('agentChoices');
-    expect(disk).toContain('p-model-42'); // 现状：不写 agentChoices → RED
-  });
 });

@@ -17,8 +17,9 @@
  */
 import type { CommandContext } from '../../bridge/index.js';
 import type { CommandRouter } from '../index.js';
-import { CONFIG_RENDER_DEBOUNCE_MS } from './shared.js';
+import { MAX_CONFIG_CARDS, CONFIG_RENDER_DEBOUNCE_MS } from './shared.js';
 import { getLogger } from '../../logger/index.js';
+import { enforceCardBudget } from '../../card/card-budget.js';
 
 export interface ConfigRenderRequest {
   ctx: CommandContext;
@@ -42,6 +43,67 @@ export function createConfigRenderState(): ConfigRenderState {
 }
 
 /**
+ * 记住一张 config 卡片 messageId（有界：超限丢最早的一张）。
+ * 无 messageId 的调用（测试/文本路径）不登记。
+ */
+export function rememberConfigCard(host: CommandRouter, messageId: string | undefined): void {
+  if (!messageId) return;
+  host.configCardIds.delete(messageId);
+  host.configCardIds.add(messageId);
+  while (host.configCardIds.size > MAX_CONFIG_CARDS) {
+    const oldest = host.configCardIds.values().next().value as string;
+    host.configCardIds.delete(oldest);
+  }
+}
+
+/**
+ * 配置卡的单一预算出口：inline 响应体与兄弟卡 PATCH 必须走同一套口径。
+ *
+ * 飞书对单卡「带 tag 节点 ≤ 200」（`MAX_CARD_COMPONENTS` 保守到 190）的限制在
+ * send 与 patch 两条路径上都成立。只在一处裁剪会让另一条路径被 `11310` 拒绝，
+ * 而 `patchCard` 失败会把该卡从 `configCardIds` 永久剔除——多卡同步静默失效，
+ * 表面症状是「只有刚点的那张卡有新值」。
+ */
+export function budgetConfigCard(card: object, where: 'inline' | 'patch'): object {
+  const { card: safeCard, wasTruncated, reason, bytesAfter } = enforceCardBudget(card);
+  if (wasTruncated) {
+    getLogger().info(
+      `[router] config card budget applied (${where}): reason=${reason} bytesAfter=${bytesAfter}`,
+    );
+  }
+  return safeCard;
+}
+
+/**
+ * 把当前草稿刷到所有已知 config 卡片上（仅后台渲染队列调用）。
+ *
+ * **不在这里登记卡片**：登记是调度时刻的事（scheduleConfigRender 同步完成，
+ * `/c` 文本命令通过 skipRemember 排除）。之前把「是否登记」存进合并后的 pending
+ * 再传给本函数，合并时字段一丢就会把用户文本消息 id 登记成 config 卡，之后每次
+ * config.set 都会把那条聊天消息 PATCH 成配置卡。职责拆开后这类事故不可能再出现。
+ *
+ * `excludeMessageId` 是刚被响应体替换的那张，跳过避免同消息重复 PATCH 触发
+ * 飞书 230429。注意：它同时意味着这张卡不会拿到本轮刷新后的目录（如 DSH 新增
+ * provider），下一次点击会补齐——最终一致，不做二次 PATCH。`config.refresh`
+ * 是例外：它不回 inline 卡片，让所有卡（含被点击那张）统一走这一条 PATCH 路径。
+ */
+async function refreshConfigCards(host: CommandRouter, excludeMessageId?: string): Promise<number> {
+  const built = host.buildConfigCard().card;
+  // 与 inline 响应同一预算口径：超限卡的 PATCH 会被飞书整卡拒绝，
+  // 再被 patchCard 的失败分支把这个 messageId 永久剔除。
+  const card = built ? budgetConfigCard(built, 'patch') : undefined;
+  if (!card) return 0;
+  let patches = 0;
+  for (const messageId of [...host.configCardIds]) {
+    if (messageId === excludeMessageId) continue;
+    const ok = await host.bridge.patchCard(messageId, card);
+    if (ok) patches += 1;
+    else host.configCardIds.delete(messageId);
+  }
+  return patches;
+}
+
+/**
  * 调度一次后台渲染。同步返回，不等待任何网络写。
  * 多次调用在窗口内合并：保留最后一次的 ctx 与 inlineMessageId。
  */
@@ -49,7 +111,7 @@ export function scheduleConfigRender(host: CommandRouter, req: ConfigRenderReque
   const state = host.configRenderState;
   // 登记是**调度时刻**的职责，同步完成：只有被点击的配置卡才进集合，
   // `/c` 文本命令的用户消息 id 通过 skipRemember 排除。
-  if (!req.skipRemember) host.rememberConfigCard(req.ctx.messageId);
+  if (!req.skipRemember) rememberConfigCard(host, req.ctx.messageId);
 
   // 合并语义：refreshCatalogs 取「或」；ctx / inlineMessageId 取最后一次。
   state.pending = {
@@ -92,7 +154,7 @@ async function runConfigRender(host: CommandRouter): Promise<void> {
 
       // 最后一次状态赢：从最新草稿重新建卡，不复用任何中间帧。
       // 复用 refreshConfigCards，兄弟卡同步语义单一事实源。
-      await host.refreshConfigCards(req.inlineMessageId);
+      await refreshConfigCards(host, req.inlineMessageId);
     } catch (err) {
       getLogger().error('[router] config 后台渲染失败:', err);
     }

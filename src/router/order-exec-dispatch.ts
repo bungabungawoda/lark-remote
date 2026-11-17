@@ -1,6 +1,7 @@
 import type { CommandRouter } from './index.js';
 import type { Bridge, CommandContext } from '../bridge/index.js';
 import { ORDER_NOT_FOUND_TEXT } from '../order/index.js';
+import { resolveOrderExecForQueue } from './actions/order-actions.js';
 
 /**
  * Dispatch an `order.exec` card action as an equivalent queued user message
@@ -30,7 +31,7 @@ export async function dispatchOrderExecForQueue(args: {
     return 'missing-id';
   }
 
-  const resolved = router.resolveOrderExecForQueue(orderId);
+  const resolved = resolveOrderExecForQueue(router, orderId);
   if (!resolved) {
     await bridge.sendResult({ text: ORDER_NOT_FOUND_TEXT }, ctx);
     return 'not-found';

@@ -7,6 +7,9 @@ import { WS_PAGE_SIZE } from '../commands/ws.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
 import { CARD_PAYLOAD_MISSING, payloadOffset, searchQueryFrom } from './shared.js';
+import * as commandActions from './command-actions.js';
+import * as lsActions from './ls-actions.js';
+import { mintQueueTaskKey } from './queue-actions.js';
 
 /**
  * Resolve an order's text at the enqueue boundary so order.exec can enter
@@ -37,7 +40,7 @@ export function resolveOrderExecForQueue(
   host.orderStore.updateUsedAt(order.id);
   return {
     orderText: order.text,
-    internalKey: host.mintQueueTaskKey('order', order.id),
+    internalKey: mintQueueTaskKey(host, 'order', order.id),
   };
 }
 
@@ -52,8 +55,8 @@ export function rebuildListCard(
   ctx: CommandContext,
   q?: string,
 ): object | undefined {
-  if (kind === 'order') return host.cmdOrder([], ctx, offset).card;
-  return host.cmdWs([], ctx, offset, q).card;
+  if (kind === 'order') return commandActions.cmdOrder(host, [], ctx, offset).card;
+  return commandActions.cmdWs(host, [], ctx, offset, q).card;
 }
 
 /**
@@ -66,7 +69,7 @@ export async function refreshListCard(
   value: { offset?: number; q?: string },
   ctx: CommandContext,
 ): Promise<object | undefined> {
-  const card = host.rebuildListCard(kind, payloadOffset(value), ctx, value.q);
+  const card = rebuildListCard(host, kind, payloadOffset(value), ctx, value.q);
   if (!card) return undefined;
   await host.bridge.updateCardInPlace(card, ctx);
   return card;
@@ -98,7 +101,7 @@ export async function mutateOrderAndRefreshCard(
   if (!outcome.ok) {
     return { toast: { type: 'error', content: outcome.error } };
   }
-  const result = host.cmdOrder([], ctx, payloadOffset(value));
+  const result = commandActions.cmdOrder(host, [], ctx, payloadOffset(value));
   return {
     toast: { type: 'success', content: outcome.toast },
     card: { type: 'raw', data: result.card! },
@@ -127,7 +130,7 @@ export async function handleOrderDelete(
   host.orderStore.remove(orderId);
 
   // Refresh the order list and update card in place, preserving current page
-  await host.refreshListCard('order', value, ctx);
+  await refreshListCard(host, 'order', value, ctx);
 
   return { toast: { type: 'success', content: '已删除指令' } };
 }
@@ -141,12 +144,12 @@ export async function handleOrderPage(
   value: CardActionPayload,
   ctx: CommandContext,
 ): Promise<CardActionResponse> {
-  const paging = host.pagingOffset(value, ORDER_PAGE_SIZE);
+  const paging = lsActions.pagingOffset(host, value, ORDER_PAGE_SIZE);
   if ('error' in paging) {
     return { toast: { type: 'error', content: paging.error } };
   }
   // cmdOrder internally clamps stale/out-of-range offsets
-  await host.refreshListCard('order', { offset: paging.offset }, ctx);
+  await refreshListCard(host, 'order', { offset: paging.offset }, ctx);
   return { toast: { type: 'success', content: '' } };
 }
 
@@ -241,8 +244,8 @@ export async function handleOrderAliasEdit(
   value: { orderId?: string; offset?: number },
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
-  const order = host.findOrderForEdit(value.orderId);
-  return host.showOrderEditCard(value, ctx, {
+  const order = findOrderForEdit(host, value.orderId);
+  return showOrderEditCard(host, value, ctx, {
     title: '✏️ 给指令起别名',
     hint: '💡 输入别名名后按回车提交；删除别名请点列表卡别名旁的 ✕',
     inputName: 'aliasName',
@@ -267,7 +270,8 @@ export async function handleOrderAliasInput(
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
   const name = value.inputValue ?? (value.formValue?.['aliasName'] as string | undefined);
-  return host.mutateOrderAndRefreshCard(
+  return mutateOrderAndRefreshCard(
+    host,
     value,
     ctx,
     { missingToast: ORDER_NOT_FOUND_TEXT },
@@ -294,7 +298,8 @@ export async function handleOrderAliasRemove(
   value: { orderId?: string; offset?: number },
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
-  return host.mutateOrderAndRefreshCard(
+  return mutateOrderAndRefreshCard(
+    host,
     value,
     ctx,
     { missingToast: '指令不存在或没有别名' },
@@ -323,9 +328,9 @@ export async function handleOrderTextEdit(
   value: { orderId?: string; offset?: number },
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
-  const order = host.findOrderForEdit(value.orderId);
+  const order = findOrderForEdit(host, value.orderId);
   // input 组件 default_value 预填完整 text（不受截断影响），提交后生效完整文本
-  return host.showOrderEditCard(value, ctx, {
+  return showOrderEditCard(host, value, ctx, {
     title: '✏️ 编辑指令',
     hint: '💡 修改后按回车提交；空白提交 = 报错；最多 200 字符',
     inputName: 'text',
@@ -356,7 +361,8 @@ export async function handleOrderTextInput(
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
   const raw = value.inputValue ?? (value.formValue?.['text'] as string | undefined);
-  return host.mutateOrderAndRefreshCard(
+  return mutateOrderAndRefreshCard(
+    host,
     value,
     ctx,
     { missingToast: ORDER_NOT_FOUND_TEXT },
@@ -377,15 +383,6 @@ export async function handleOrderTextInput(
   );
 }
 
-export function resolveOrderTarget(host: CommandRouter, target: string): OrderEntry | undefined {
-  const all = host.orderStore.get();
-  const byId = all.find((o) => o.id === target);
-  if (byId) return byId;
-  const n = Number(target);
-  if (Number.isInteger(n) && n >= 1 && n <= all.length) return all[n - 1];
-  return undefined;
-}
-
 /**
  * Handle ws.use card action: switch to the cwd, then refresh the /ws
  * list card in place so "recent" sort order is immediately visible.
@@ -400,7 +397,7 @@ export async function handleWsUse(
   ctx: CommandContext,
 ): Promise<CardActionResponse> {
   const name = value.name ?? '';
-  const useResult = host.cmdWs(['use', name], ctx);
+  const useResult = commandActions.cmdWs(host, ['use', name], ctx);
 
   // Error cases (cwd not found, path invalid, etc.): relay as error toast
   if (useResult.text && !useResult.text.includes('已切换')) {
@@ -423,7 +420,7 @@ export async function handleWsUse(
   }
 
   // Refresh the /ws list card in place so "recent" sort is immediately visible
-  await host.refreshListCard('ws', value, ctx);
+  await refreshListCard(host, 'ws', value, ctx);
 
   // Toast feedback (suppress text when a persistent message was already sent).
   // 兜底文案必须用 warning 型：ws.use 不在 DIRECT_RETURN_CMDS，toast 经
@@ -454,12 +451,12 @@ export async function handleWsRemove(
   // Execute the removal and let its result decide the toast: the card can be
   // a stale list (alias already deleted elsewhere), and an unconditional
   // "已删除" would then contradict what the refreshed card shows.
-  const result = host.cmdWs(['remove', name], ctx);
+  const result = commandActions.cmdWs(host, ['remove', name], ctx);
   const text = result.text ?? `删除 workspace "${name}" 失败`;
 
   // Rebuild the /ws list card and update it in place, preserving the page
   // the user was on when they clicked 删除.
-  await host.refreshListCard('ws', value, ctx);
+  await refreshListCard(host, 'ws', value, ctx);
 
   return { toast: { type: text.startsWith('已删除') ? 'success' : 'error', content: text } };
 }
@@ -473,12 +470,12 @@ export async function handleWsPage(
   value: CardActionPayload,
   ctx: CommandContext,
 ): Promise<CardActionResponse> {
-  const paging = host.pagingOffset(value, WS_PAGE_SIZE);
+  const paging = lsActions.pagingOffset(host, value, WS_PAGE_SIZE);
   if ('error' in paging) {
     return { toast: { type: 'error', content: paging.error } };
   }
   // cmdWs internally clamps stale/out-of-range offsets
-  await host.refreshListCard('ws', { offset: paging.offset, q: value.q }, ctx);
+  await refreshListCard(host, 'ws', { offset: paging.offset, q: value.q }, ctx);
   return { toast: { type: 'success', content: '' } };
 }
 
@@ -492,7 +489,7 @@ export async function handleWsFilter(
   ctx: CommandContext,
 ): Promise<CardActionResponse> {
   const q = searchQueryFrom(value);
-  await host.refreshListCard('ws', { offset: 0, q }, ctx);
+  await refreshListCard(host, 'ws', { offset: 0, q }, ctx);
   return { toast: { type: 'success', content: q ? `筛选："${q}"` : '已清除筛选' } };
 }
 
@@ -509,7 +506,7 @@ export async function handleWsSort(
   const current = host.wsSortPreference.get(userId) ?? 'recent';
   const next = current === 'recent' ? 'alpha' : 'recent';
   host.wsSortPreference.set(userId, next);
-  await host.refreshListCard('ws', { offset: 0, q: value.q }, ctx);
+  await refreshListCard(host, 'ws', { offset: 0, q: value.q }, ctx);
   const nextLabel = next === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
   return {
     toast: { type: 'success', content: `已切换为 ${nextLabel}` },

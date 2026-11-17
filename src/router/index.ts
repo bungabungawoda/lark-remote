@@ -5,8 +5,7 @@ import type { AgentBinding } from '../bridge/queue-manager.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
-import type { AgentKind } from '../agent-kinds.js';
-import type { AgentSessionContentEvent, AgentSessionReader } from '../session-contract.js';
+import type { AgentSessionReader } from '../session-contract.js';
 import { getLogger } from '../logger/index.js';
 
 /** /config 打开时登记的后台目录探测槽位。 */
@@ -17,7 +16,6 @@ interface ConfigOpenRefreshSlot {
 }
 import type { CloneSession } from '../clone.js';
 import { stripPlaceholders } from '../inbound/placeholder.js';
-import type { SessionDisplayUsage } from '../card/usage-format.js';
 import {
   checkLatestVersion as defaultCheckLatestVersion,
   compareVersions as defaultCompareVersions,
@@ -36,10 +34,10 @@ import {
   createConfigRenderState,
   scheduleConfigRender,
   flushConfigRender,
+  rememberConfigCard,
 } from './actions/config-render.js';
 import * as commandActions from './actions/command-actions.js';
 import type { CardActionPayload, CardActionResponse } from './actions/shared.js';
-import type { ConfigSwitchResult } from './actions/shared.js';
 import { CONFIG_EXIT_FLUSH_BUDGET_MS } from './actions/shared.js';
 export type { CardActionPayload } from './actions/shared.js';
 
@@ -379,158 +377,102 @@ export const COMPACT_ACTION_CMDS: ReadonlySet<string> = new Set(['compact', 'res
 // 用 Map 而非对象字面量：constructor/toString 这类 cmd 会命中 Object.prototype。
 // ===========================================================================
 
-type CardActionMethod =
-  | 'cardLsFile'
-  | 'handleLsRefresh'
-  | 'handleLsBrowse'
-  | 'handleLsSwitch'
-  | 'handleLsPage'
-  | 'handleLsFilter'
-  | 'handleWsPage'
-  | 'handleWsFilter'
-  | 'handleWsUse'
-  | 'handleWsSort'
-  | 'handleWsRemove'
-  | 'handleResumeUse'
-  | 'handleResumePage'
-  | 'handleActivePage'
-  | 'handleNewSession'
-  | 'handleCardStop'
-  | 'handleJobKill'
-  | 'handleQueueCancel'
-  | 'handleQueueImmediate'
-  | 'handleQueueDiagnose'
-  | 'handleQueueEdit'
-  | 'handleQueueInput'
-  | 'handleOrderDelete'
-  | 'handleOrderPage'
-  | 'handleOrderAliasEdit'
-  | 'handleOrderAliasInput'
-  | 'handleOrderAliasRemove'
-  | 'handleOrderTextEdit'
-  | 'handleOrderTextInput'
-  | 'enqueueConfigAction'
-  | 'handleCompact'
-  | 'handleResumeCompact'
-  | 'handleStopSession';
-
-type CardActionArgStyle = 'path' | 'ctxOnly' | 'voidCall' | 'returnCall';
-
-type CardActionInvoker = (
-  ...args: unknown[]
+type CardActionHandler = (
+  host: CommandRouter,
+  value: CardActionPayload,
+  ctx: CommandContext,
 ) => Promise<CardActionResponse | void> | CardActionResponse | void;
 
-const CARD_ACTION_SPECS = new Map<string, { method: CardActionMethod; args: CardActionArgStyle }>([
-  ['ls.file', { method: 'cardLsFile', args: 'path' }],
-  ['ls.refresh', { method: 'handleLsRefresh', args: 'voidCall' }],
-  ['ls.browse', { method: 'handleLsBrowse', args: 'voidCall' }],
-  ['ls.switch', { method: 'handleLsSwitch', args: 'voidCall' }],
-  ['ls.page', { method: 'handleLsPage', args: 'returnCall' }],
-  ['ls.filter', { method: 'handleLsFilter', args: 'returnCall' }],
-  ['ws.page', { method: 'handleWsPage', args: 'returnCall' }],
-  ['ws.filter', { method: 'handleWsFilter', args: 'returnCall' }],
-  ['ws.use', { method: 'handleWsUse', args: 'returnCall' }],
-  ['ws.sort', { method: 'handleWsSort', args: 'returnCall' }],
-  ['ws.remove', { method: 'handleWsRemove', args: 'returnCall' }],
-  ['resume.use', { method: 'handleResumeUse', args: 'voidCall' }],
-  ['resume.page', { method: 'handleResumePage', args: 'returnCall' }],
-  ['active.page', { method: 'handleActivePage', args: 'returnCall' }],
-  ['new-session', { method: 'handleNewSession', args: 'ctxOnly' }],
-  ['stop', { method: 'handleCardStop', args: 'voidCall' }],
-  ['job.kill', { method: 'handleJobKill', args: 'voidCall' }],
-  ['queue.cancel', { method: 'handleQueueCancel', args: 'voidCall' }],
-  ['queue.immediate', { method: 'handleQueueImmediate', args: 'voidCall' }],
-  ['queue.diagnose', { method: 'handleQueueDiagnose', args: 'voidCall' }],
-  ['queue.edit', { method: 'handleQueueEdit', args: 'voidCall' }],
-  ['queue.input', { method: 'handleQueueInput', args: 'returnCall' }],
-  ['order.delete', { method: 'handleOrderDelete', args: 'returnCall' }],
-  ['order.page', { method: 'handleOrderPage', args: 'returnCall' }],
-  ['order.aliasEdit', { method: 'handleOrderAliasEdit', args: 'returnCall' }],
-  ['order.aliasInput', { method: 'handleOrderAliasInput', args: 'returnCall' }],
-  ['order.aliasRemove', { method: 'handleOrderAliasRemove', args: 'returnCall' }],
-  ['order.textEdit', { method: 'handleOrderTextEdit', args: 'returnCall' }],
-  ['order.textInput', { method: 'handleOrderTextInput', args: 'returnCall' }],
-  ['config.set', { method: 'enqueueConfigAction', args: 'returnCall' }],
-  ['config.input', { method: 'enqueueConfigAction', args: 'returnCall' }],
-  ['config.refresh', { method: 'enqueueConfigAction', args: 'returnCall' }],
-  ['config.save', { method: 'enqueueConfigAction', args: 'returnCall' }],
-  ['compact', { method: 'handleCompact', args: 'voidCall' }],
-  ['resume.compact', { method: 'handleResumeCompact', args: 'voidCall' }],
-  ['stop.session', { method: 'handleStopSession', args: 'voidCall' }],
+const CARD_ACTION_SPECS = new Map<string, CardActionHandler>([
+  ['ls.file', (host, value, ctx) => lsActions.cardLsFile(host, value.path, ctx)],
+  ['ls.refresh', (host, value, ctx) => lsActions.handleLsRefresh(host, value, ctx)],
+  ['ls.browse', (host, value, ctx) => lsActions.handleLsBrowse(host, value, ctx)],
+  ['ls.switch', (host, value, ctx) => lsActions.handleLsSwitch(host, value, ctx)],
+  ['ls.page', (host, value, ctx) => lsActions.handleLsPage(host, value, ctx)],
+  ['ls.filter', (host, value, ctx) => lsActions.handleLsFilter(host, value, ctx)],
+  ['ws.page', (host, value, ctx) => orderActions.handleWsPage(host, value, ctx)],
+  ['ws.filter', (host, value, ctx) => orderActions.handleWsFilter(host, value, ctx)],
+  ['ws.use', (host, value, ctx) => orderActions.handleWsUse(host, value, ctx)],
+  ['ws.sort', (host, value, ctx) => orderActions.handleWsSort(host, value, ctx)],
+  ['ws.remove', (host, value, ctx) => orderActions.handleWsRemove(host, value, ctx)],
+  ['resume.use', (host, value, ctx) => sessionActions.handleResumeUse(host, value, ctx)],
+  ['resume.page', (host, value, ctx) => sessionActions.handleResumePage(host, value, ctx)],
+  ['active.page', (host, value, ctx) => sessionActions.handleActivePage(host, value, ctx)],
+  ['new-session', (host, _value, ctx) => sessionActions.handleNewSession(host, ctx)],
+  ['stop', (host, value, ctx) => sessionActions.handleCardStop(host, value, ctx)],
+  ['job.kill', (host, value, ctx) => sessionActions.handleJobKill(host, value, ctx)],
+  ['queue.cancel', (host, value, ctx) => queueActions.handleQueueCancel(host, value, ctx)],
+  ['queue.immediate', (host, value, ctx) => queueActions.handleQueueImmediate(host, value, ctx)],
+  ['queue.diagnose', (host, value, ctx) => queueActions.handleQueueDiagnose(host, value, ctx)],
+  ['queue.edit', (host, value, ctx) => queueActions.handleQueueEdit(host, value, ctx)],
+  ['queue.input', (host, value, ctx) => queueActions.handleQueueInput(host, value, ctx)],
+  ['order.delete', (host, value, ctx) => orderActions.handleOrderDelete(host, value, ctx)],
+  ['order.page', (host, value, ctx) => orderActions.handleOrderPage(host, value, ctx)],
+  ['order.aliasEdit', (host, value, ctx) => orderActions.handleOrderAliasEdit(host, value, ctx)],
+  ['order.aliasInput', (host, value, ctx) => orderActions.handleOrderAliasInput(host, value, ctx)],
+  [
+    'order.aliasRemove',
+    (host, value, ctx) => orderActions.handleOrderAliasRemove(host, value, ctx),
+  ],
+  ['order.textEdit', (host, value, ctx) => orderActions.handleOrderTextEdit(host, value, ctx)],
+  ['order.textInput', (host, value, ctx) => orderActions.handleOrderTextInput(host, value, ctx)],
+  ['config.set', (host, value, ctx) => configActions.enqueueConfigAction(host, value, ctx)],
+  ['config.input', (host, value, ctx) => configActions.enqueueConfigAction(host, value, ctx)],
+  ['config.refresh', (host, value, ctx) => configActions.enqueueConfigAction(host, value, ctx)],
+  ['config.save', (host, value, ctx) => configActions.enqueueConfigAction(host, value, ctx)],
+  ['compact', (host, value, ctx) => host.bridge.handleCompactAction(value, ctx)],
+  ['resume.compact', (host, value, ctx) => host.bridge.handleResumeCompact(value, ctx)],
+  ['stop.session', (host, value, ctx) => host.bridge.handleStopSession(value, ctx)],
 ]);
 
-type CommandMethod =
-  | 'cmdHelp'
-  | 'cmdStatus'
-  | 'cmdPs'
-  | 'cmdStop'
-  | 'cmdExit'
-  | 'cmdRestart'
-  | 'cmdNew'
-  | 'cmdCd'
-  | 'cmdLs'
-  | 'cmdDownload'
-  | 'cmdWs'
-  | 'cmdResume'
-  | 'cmdActive'
-  | 'cmdConfig'
-  | 'cmdOrder'
-  | 'cmdUpdate'
-  | 'cmdClone';
+type CommandHandler = (
+  host: CommandRouter,
+  args: string[],
+  ctx: CommandContext,
+) => Promise<CommandResult | null> | CommandResult | null;
 
-type CommandArgStyle = 'none' | 'ctxOnly' | 'argsCtx';
-
-type CommandInvoker = (...args: unknown[]) => Promise<CommandResult | null> | CommandResult | null;
-
-const COMMAND_SPECS = new Map<string, { method: CommandMethod; args: CommandArgStyle }>([
-  ['help', { method: 'cmdHelp', args: 'none' }],
-  ['h', { method: 'cmdHelp', args: 'none' }],
-  ['status', { method: 'cmdStatus', args: 'ctxOnly' }],
-  ['s', { method: 'cmdStatus', args: 'ctxOnly' }],
-  ['ps', { method: 'cmdPs', args: 'ctxOnly' }],
-  ['stop', { method: 'cmdStop', args: 'ctxOnly' }],
-  ['t', { method: 'cmdStop', args: 'ctxOnly' }],
-  ['exit', { method: 'cmdExit', args: 'none' }],
-  ['quit', { method: 'cmdExit', args: 'none' }],
-  ['e', { method: 'cmdExit', args: 'none' }],
-  ['restart', { method: 'cmdRestart', args: 'none' }],
-  ['new', { method: 'cmdNew', args: 'ctxOnly' }],
-  ['cd', { method: 'cmdCd', args: 'argsCtx' }],
-  ['ls', { method: 'cmdLs', args: 'argsCtx' }],
-  ['download', { method: 'cmdDownload', args: 'argsCtx' }],
-  ['d', { method: 'cmdDownload', args: 'argsCtx' }],
-  ['ws', { method: 'cmdWs', args: 'argsCtx' }],
-  ['resume', { method: 'cmdResume', args: 'argsCtx' }],
-  ['r', { method: 'cmdResume', args: 'argsCtx' }],
-  ['active', { method: 'cmdActive', args: 'argsCtx' }],
-  ['config', { method: 'cmdConfig', args: 'argsCtx' }],
-  ['c', { method: 'cmdConfig', args: 'argsCtx' }],
-  ['order', { method: 'cmdOrder', args: 'argsCtx' }],
-  ['o', { method: 'cmdOrder', args: 'argsCtx' }],
-  ['update', { method: 'cmdUpdate', args: 'argsCtx' }],
-  ['u', { method: 'cmdUpdate', args: 'argsCtx' }],
-  ['clone', { method: 'cmdClone', args: 'argsCtx' }],
+const COMMAND_SPECS = new Map<string, CommandHandler>([
+  ['help', (host) => commandActions.cmdHelp(host)],
+  ['h', (host) => commandActions.cmdHelp(host)],
+  ['status', (host, _args, ctx) => commandActions.cmdStatus(host, ctx)],
+  ['s', (host, _args, ctx) => commandActions.cmdStatus(host, ctx)],
+  ['ps', (host, _args, ctx) => commandActions.cmdPs(host, ctx)],
+  ['stop', (host, _args, ctx) => commandActions.cmdStop(host, ctx)],
+  ['t', (host, _args, ctx) => commandActions.cmdStop(host, ctx)],
+  ['exit', (host) => commandActions.cmdExit(host)],
+  ['quit', (host) => commandActions.cmdExit(host)],
+  ['e', (host) => commandActions.cmdExit(host)],
+  ['restart', (host) => commandActions.cmdRestart(host)],
+  ['new', (host, _args, ctx) => commandActions.cmdNew(host, ctx)],
+  ['cd', (host, args, ctx) => commandActions.cmdCd(host, args, ctx)],
+  ['ls', (host, args, ctx) => commandActions.cmdLs(host, args, ctx)],
+  ['download', (host, args, ctx) => commandActions.cmdDownload(host, args, ctx)],
+  ['d', (host, args, ctx) => commandActions.cmdDownload(host, args, ctx)],
+  ['ws', (host, args, ctx) => commandActions.cmdWs(host, args, ctx)],
+  ['resume', (host, args, ctx) => commandActions.cmdResume(host, args, ctx)],
+  ['r', (host, args, ctx) => commandActions.cmdResume(host, args, ctx)],
+  ['active', (host, args, ctx) => commandActions.cmdActive(host, args, ctx)],
+  ['config', (host, args, ctx) => configActions.cmdConfig(host, args, ctx)],
+  ['c', (host, args, ctx) => configActions.cmdConfig(host, args, ctx)],
+  ['order', (host, args, ctx) => commandActions.cmdOrder(host, args, ctx)],
+  ['o', (host, args, ctx) => commandActions.cmdOrder(host, args, ctx)],
+  ['update', (host, args, ctx) => commandActions.cmdUpdate(host, args, ctx)],
+  ['u', (host, args, ctx) => commandActions.cmdUpdate(host, args, ctx)],
+  ['clone', (host, args, ctx) => commandActions.cmdClone(host, args, ctx)],
 ]);
 
-/** 命令名 → 命令方法查表分发；无匹配时返回与旧 default 分支一致的文案。 */
+/** 命令名 → 命令处理函数查表分发；无匹配时返回与旧 default 分支一致的文案。 */
 function dispatchCommand(
   router: CommandRouter,
   cmd: string | undefined,
   args: string[],
   ctx: CommandContext,
 ): Promise<CommandResult | null> | CommandResult | null {
-  const spec = COMMAND_SPECS.get(cmd ?? '');
-  if (!spec) {
+  const handler = COMMAND_SPECS.get(cmd ?? '');
+  if (!handler) {
     return { text: `未知命令 /${cmd}，输入 /help 查看可用命令` };
   }
-  const handler = (router as unknown as Record<CommandMethod, CommandInvoker>)[spec.method];
-  if (spec.args === 'none') {
-    return handler.call(router);
-  }
-  if (spec.args === 'ctxOnly') {
-    return handler.call(router, ctx);
-  }
-  return handler.call(router, args, ctx);
+  return handler(router, args, ctx);
 }
 
 export class CommandRouter {
@@ -604,10 +546,10 @@ export class CommandRouter {
    *
    * 一张飞书卡片可以被点击 N 次，卡片 messageId 与入队动作是 1:N；而排队
    * 条目的身份必须与「一次入队动作」1:1（queuedTasks 的定位、queueCardMessages
-   * 的卡片更新、taskIndex 的取消判据全部按这个 key 做 lookup）。复用卡片 id
-   * 会让同 key 的多条任务互相顶替：位置显示命中最早那条兄弟、第一条开始时删掉
-   * 索引导致其余兄弟被判「已撤销」静默丢弃（连点 Compact
-   * 三次 → 三张排队卡都显示「第 1 位」、两张永久停在「等待中」，只压缩一次）。
+   * 的卡片更新、begin 路径的取消判据全部按这个 key 做 lookup）。复用卡片 id
+   * 会让同 key 的多条任务互相顶替：位置显示与撤销都命中最早那条兄弟，卡片更新
+   * 互相覆盖（连点 Compact 三次 → 三张排队卡都显示「第 1 位」，撤销/执行态
+   * 落到错误条目）。
    *
    * Date.now() 不够（两次同步调用可落在同一毫秒）；计数器与时间无关，恒唯一。
    */
@@ -752,7 +694,7 @@ export class CommandRouter {
             onCardSent: (messageId) => {
               // /config 卡片发送成功后即登记：deferred 目录刷新（cmdConfig 超预算
               // 转后台的预取）与后续 config.* 兄弟卡扇出才能覆盖这张刚打开的卡。
-              this.rememberConfigCard(messageId);
+              rememberConfigCard(this, messageId);
             },
           });
           this.consumeConfigOpenRefresh(ctx);
@@ -817,24 +759,9 @@ export class CommandRouter {
     if (APPROVAL_ACTION_CMDS.includes(value.cmd)) {
       return this.handleApprovalAction(value, ctx);
     }
-    const spec = CARD_ACTION_SPECS.get(value.cmd);
-    if (spec) {
-      // Map 查表取出的是未绑定方法，必须显式 .call(this, ...) 保留类实例上下文。
-      const handler = this[spec.method] as unknown as CardActionInvoker;
-      if (spec.args === 'path') {
-        await handler.call(this, value.path, ctx);
-        return;
-      }
-      if (spec.args === 'ctxOnly') {
-        await handler.call(this, ctx);
-        return;
-      }
-      // voidCall 对应原 switch 的 `await this.xxx(...); return;`，丢弃返回值。
-      if (spec.args === 'voidCall') {
-        await handler.call(this, value, ctx);
-        return;
-      }
-      return handler.call(this, value, ctx);
+    const handler = CARD_ACTION_SPECS.get(value.cmd);
+    if (handler) {
+      return handler(this, value, ctx);
     }
     if (value.cmd.startsWith('help.')) {
       await this.handleHelpAction(value, ctx);
@@ -842,33 +769,6 @@ export class CommandRouter {
     }
     await this.handleUnknownCardAction(value, ctx);
     return;
-  }
-
-  /**
-   * resume.use: 从 /resume 列表卡切换到所选会话。
-   */
-  async handleResumeUse(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return sessionActions.handleResumeUse(this, value, ctx);
-  }
-
-  /** new-session: 清空当前会话绑定，下一条消息开始全新对话。 */
-  async handleNewSession(ctx: CommandContext): Promise<void> {
-    return sessionActions.handleNewSession(this, ctx);
-  }
-
-  /** compact: 对当前会话发起压缩（bridge 收口）。 */
-  async handleCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return this.bridge.handleCompactAction(value, ctx);
-  }
-
-  /** resume.compact: 对 /resume 选中的历史会话发起压缩（bridge 收口）。 */
-  async handleResumeCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return this.bridge.handleResumeCompact(value, ctx);
-  }
-
-  /** stop.session: 恢复卡上的「终止」——取消指定 session 的宿主 turn。 */
-  async handleStopSession(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return this.bridge.handleStopSession(value, ctx);
   }
 
   /**
@@ -904,14 +804,6 @@ export class CommandRouter {
    * Routes to the appropriate bridge method based on value.cmd.
    * Returns a toast response for immediate user feedback.
    */
-  /** queue.* 卡片动作通用守卫：cwd/messageId 缺失时回复错误并返回 null。 */
-  async queuePayloadOrReply(
-    value: { cwd?: string; messageId?: string },
-    ctx: CommandContext,
-  ): Promise<{ cwd: string; messageId: string } | null> {
-    return queueActions.queuePayloadOrReply(this, value, ctx);
-  }
-
   /** 答案类操作的统一失败反馈：重复投递（同一 nonce 第二次点击）是已生效的
    *  中性事件，报 error 会误导（首次点击实际已成功）。 */
   answerFailureToast(msg: string): CardActionResponse {
@@ -939,508 +831,6 @@ export class CommandRouter {
       const msg = err instanceof Error ? err.message : String(err);
       return spec.failureToast ? spec.failureToast(msg) : this.answerFailureToast(msg);
     }
-  }
-
-  /**
-   * Handle queue.cancel: remove this message from the queue.
-   */
-  async handleQueueCancel(
-    value: { cwd?: string; messageId?: string },
-    ctx: CommandContext,
-  ): Promise<void> {
-    return queueActions.handleQueueCancel(this, value, ctx);
-  }
-
-  /**
-   * Handle queue.immediate: stop current run, clear queue before this message, execute this message immediately.
-   * Instead of asking user to resend, we keep the target task in queue and let it execute.
-   */
-  /**
-   * 把「执行编辑后的内容」注册成原队列槽位的一次性 replacement（复用入队时
-   * 捕获的 binding + 恢复 lane cwd，否则编辑后重跑的 run 会丢 cwd 与绑定）。
-   *
-   * 重新入队不行：`enqueue` 只能追加到 promise 链尾部，会把编辑任务甩到
-   * 后来者后面，违背「立即执行 = 下一个就跑」。三个调用点都必须在任何 await
-   * 之前注册——begin 路径消费 replacement 的时机不可预测（见
-   * handleQueueImmediate 步骤 1.5 的竞态说明）。
-   */
-  registerEditedReplacement(
-    cwd: string,
-    messageId: string,
-    content: string,
-    binding: AgentBinding | undefined,
-    ctx: CommandContext,
-  ): void {
-    return queueActions.registerEditedReplacement(this, cwd, messageId, content, binding, ctx);
-  }
-
-  async handleQueueImmediate(
-    value: { cwd?: string; messageId?: string },
-    ctx: CommandContext,
-  ): Promise<void> {
-    return queueActions.handleQueueImmediate(this, value, ctx);
-  }
-
-  /**
-   * 清掉排在目标之前的所有排队任务，返回实际清除条数。
-   *
-   * 两条红线：
-   * - 目标可能在 interruptCurrentRun 等待期间已经接跑（链并发前进），那时它已不在
-   *   快照里，剩下的全部排在它**后面**——清除必须在目标位置之前停下，不得越界删掉
-   *   用户没要求清除的任务。
-   * - 移除循环必须整体同步：队列链在任何 await 处都会推进（卡片 PATCH 也算），
-   *   一旦让出事件循环，用户要求清除的任务可能趁撤销卡还在路上就跑起来了。
-   *   撤销卡片由 `removeFromQueue` 统一触发（fire-and-forget）。
-   */
-  clearTasksAheadOfTarget(cwd: string, messageId: string): number {
-    return queueActions.clearTasksAheadOfTarget(this, cwd, messageId);
-  }
-
-  /**
-   * `queue.immediate` 的终态反馈（唯一出口）。
-   *
-   * 承诺必须与真实调度一致：目标只有确实是停止后的下一个，才可以把它的卡翻成
-   * 「执行中」并说「将立即执行」；在途接跑/被撤销/被抢先/远程停止未确认四种状态
-   * 各给各的文案（把没发生的事说成发生了，比沉默更糟——用户会据文案决定要不要重发）。
-   */
-  async reportImmediateOutcome(opts: {
-    cwd: string;
-    messageId: string;
-    ctx: CommandContext;
-    removedCount: number;
-    stopped: boolean;
-    stopUnconfirmed: boolean;
-    agentKind?: AgentKind;
-  }): Promise<void> {
-    return queueActions.reportImmediateOutcome(this, opts);
-  }
-
-  /**
-   * Handle queue.diagnose: show diagnostic info for why message is queuing.
-   */
-  async handleQueueDiagnose(
-    value: { cwd?: string; messageId?: string; userId?: string; chatId?: string },
-    ctx: CommandContext,
-  ): Promise<void> {
-    return queueActions.handleQueueDiagnose(this, value, ctx);
-  }
-
-  /**
-   * Handle queue.edit: show input field for editing the queued message.
-   */
-  async handleQueueEdit(
-    value: { cwd?: string; messageId?: string },
-    ctx: CommandContext,
-  ): Promise<void> {
-    return queueActions.handleQueueEdit(this, value, ctx);
-  }
-
-  /**
-   * Handle queue.input: update the queued message with new content.
-   * Returns a CardActionResponse carrying both a toast (immediate feedback,
-   * no separate message sent) and a `card` field so Feishu renders the
-   * updated queue card in place, closing the edit form. A toast-only response
-   * leaves the card stuck in the edit state (Feishu keeps the pre-click card
-   * when the callback response has no `card` field).
-   */
-  async handleQueueInput(
-    value: {
-      cwd?: string;
-      messageId?: string;
-      inputValue?: string;
-      formValue?: Record<string, unknown>;
-    },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return queueActions.handleQueueInput(this, value, ctx);
-  }
-
-  /**
-   * 分页卡动作的 offset 解析：优先读取「跳转页码」输入框（paginationBar 内置
-   * 的 CardKit 2.0 input），未输入则回退 `payload.offset`（上一页/下一页按钮）。
-   * 非法页码返回 `{ error }`，调用方应回错误 toast 且不刷新卡片。
-   */
-  pagingOffset(
-    value: CardActionPayload,
-    defaultPageSize: number,
-  ): { offset: number } | { error: string } {
-    return lsActions.pagingOffset(this, value, defaultPageSize);
-  }
-
-  /**
-   * Handle ls.switch: switch cwd to target directory after path validation.
-   */
-  async handleLsSwitch(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return lsActions.handleLsSwitch(this, value, ctx);
-  }
-
-  /**
-   * Handle ls.refresh: reload current directory.
-   */
-  async handleLsRefresh(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return lsActions.handleLsRefresh(this, value, ctx);
-  }
-
-  /**
-   * ls 卡片动作的统一出口：命令返回 card 时原地刷新；只返回 text（目录读取
-   * 失败等）时必须把文案发给用户，不能对 `card.card!` 传 undefined——那样
-   * updateCardInPlace 失败后 sendResult({card:undefined}) 也直接返回 false，
-   * 用户点了按钮没有任何反馈、真实错误被吞掉。
-   */
-  async refreshLsCard(result: CommandResult, ctx: CommandContext): Promise<void> {
-    return lsActions.refreshLsCard(this, result, ctx);
-  }
-
-  /**
-   * Handle ls.page: paginate to a specific offset.
-   */
-  async handleLsPage(value: CardActionPayload, ctx: CommandContext): Promise<CardActionResponse> {
-    return lsActions.handleLsPage(this, value, ctx);
-  }
-
-  /**
-   * Handle ls.filter: 按搜索框提交的关键词重新渲染当前目录卡。
-   *
-   * offset 恒重置为 0（新筛选从第 1 页开始）。路径校验与 TOCTOU 兜底照
-   * handleLsPage——校验失败只回错误 toast，绝不动卡片（否则用户看到一张空卡）。
-   * ls.browse / ls.switch 的 value 里刻意不带 q，换目录即清除筛选。
-   */
-  async handleLsFilter(value: CardActionPayload, ctx: CommandContext): Promise<CardActionResponse> {
-    return lsActions.handleLsFilter(this, value, ctx);
-  }
-
-  /**
-   * Handle resume.page: paginate the /resume session list in place.
-   * Mirrors handleLsPage — updates the same card, never sends a new one.
-   */
-  async handleResumePage(
-    value: CardActionPayload,
-    ctx: CommandContext,
-  ): Promise<CardActionResponse> {
-    return sessionActions.handleResumePage(this, value, ctx);
-  }
-
-  /**
-   * Handle active.page: paginate the /active run list in place.
-   * Mirrors handleResumePage — updates the same card, never sends a new one.
-   */
-  async handleActivePage(
-    value: CardActionPayload,
-    ctx: CommandContext,
-  ): Promise<CardActionResponse> {
-    return sessionActions.handleActivePage(this, value, ctx);
-  }
-
-  /**
-   * Handle ls.browse: browse directory without switching cwd.
-   */
-  async handleLsBrowse(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return lsActions.handleLsBrowse(this, value, ctx);
-  }
-
-  /**
-   * Handle stop card action: interrupt current run.
-   */
-  async handleCardStop(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return sessionActions.handleCardStop(this, value, ctx);
-  }
-
-  /**
-   * Handle a terminal card's 「停止」 on one background job.
-   *
-   * 任务跨 run 生命周期，所以卡片按钮是唯一入口；失败必须给出可读原因
-   * （任务已自行结束、服务重启后快照被回收），不能点了没反应。
-   */
-  async handleJobKill(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return sessionActions.handleJobKill(this, value, ctx);
-  }
-
-  /**
-   * Resolve an order's text at the enqueue boundary so order.exec can enter
-   * the serial queue as an equivalent user message (Plan A) — the same path a
-   * hand-typed message takes. index.ts calls this before bridge.enqueue and
-   * uses the returned `orderText` as the queue messagePreview / edit
-   * default_value, and `internalKey` as the queue dedup key.
-   *
-   * Why an internal key instead of the Feishu card messageId: one order card
-   * can be clicked many times, so the card messageId is 1:N with enqueue
-   * actions. Reusing it collides queuedTasks / queueCardMessages lookups.
-   * Each call therefore mints a unique key (the Feishu messageId still flows
-   * through ctx for replies/reactions — the two concerns are separate).
-   *
-   * `updateUsedAt` runs here, at resolve time, so the usage timestamp
-   * survives even an immediate crash before the queued task ever runs
-   * (preserves the H3 crash-safe property previously held by handleOrderExec,
-   * which recorded it right before forwardToClaude).
-   *
-   * Returns null when the order no longer exists; index.ts surfaces the error.
-   */
-  resolveOrderExecForQueue(orderId: string): { orderText: string; internalKey: string } | null {
-    return orderActions.resolveOrderExecForQueue(this, orderId);
-  }
-
-  /**
-   * 铸造一个排队条目身份 key（唯一铸造点）。
-   *
-   * 调用方：order.exec 文本钩子（resolveOrderExecForQueue）与入口层
-   * （index.ts）的非即时卡片动作入队。卡片 messageId 只能当「回复目标」
-   * （`taskMeta.feishuReplyTo`），不得当队列 key —— 理由见
-   * `queueTaskKeyCounter` 字段注释。
-   */
-  mintQueueTaskKey(kind: string, id?: string): string {
-    return queueActions.mintQueueTaskKey(this, kind, id);
-  }
-  /**
-   * 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
-   * `q` 只服务 ws 卡的关键词筛选；order 卡无此功能，不透传。
-   */
-  rebuildListCard(
-    kind: 'order' | 'ws',
-    offset: number,
-    ctx: CommandContext,
-    q?: string,
-  ): object | undefined {
-    return orderActions.rebuildListCard(this, kind, offset, ctx, q);
-  }
-
-  /**
-   * 单源：「重建列表卡 → updateCardInPlace」原地刷新骨架（列表卡删除/
-   * 翻页/移除/排序/筛选动作共用）。返回重建后的卡片；无卡时返回 undefined 且跳过更新。
-   */
-  async refreshListCard(
-    kind: 'order' | 'ws',
-    value: { offset?: number; q?: string },
-    ctx: CommandContext,
-  ): Promise<object | undefined> {
-    return orderActions.refreshListCard(this, kind, value, ctx);
-  }
-
-  /**
-   * 单源：order 三个 input handler（aliasInput/aliasRemove/textInput）
-   * 的公共骨架——校验 orderId → reload+find → mutate → 成功后 toast + raw 卡。
-   * mutate 返回 error 时仅回 error toast，不重渲染。
-   * 注意：本 helper 只服务「toast + card 进响应体」语义（飞书需用响应体原地
-   * 替换 pre-click 编辑卡）；updateCardInPlace 原地刷新走 refreshListCard。
-   */
-  async mutateOrderAndRefreshCard(
-    value: { orderId?: string; offset?: number },
-    ctx: CommandContext,
-    opts: { missingToast: string },
-    mutate: (order: OrderEntry) => { ok: true; toast: string } | { ok: false; error: string },
-  ): Promise<CardActionResponse | void> {
-    return orderActions.mutateOrderAndRefreshCard(this, value, ctx, opts, mutate);
-  }
-
-  /**
-   * Handle order.delete: remove the order and update card in place.
-   */
-  async handleOrderDelete(
-    value: { orderId?: string; offset?: number },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleOrderDelete(this, value, ctx);
-  }
-
-  /**
-   * Handle order.page: paginate the /order list in place.
-   * Mirrors handleLsPage — updates the same card, never sends a new one.
-   */
-  async handleOrderPage(
-    value: CardActionPayload,
-    ctx: CommandContext,
-  ): Promise<CardActionResponse> {
-    return orderActions.handleOrderPage(this, value, ctx);
-  }
-
-  /**
-   * Handle order.aliasEdit: 展示别名编辑卡（input，回车/完成键提交）。
-   * 有别名时预填；提交 `order.aliasInput` 处理（含校验与唯一性）。
-   */
-  /**
-   * order 编辑卡公共骨架：payload 校验 → 查指令 → 构造 input 编辑卡 → 原地更新。
-   * handleOrderAliasEdit / handleOrderTextEdit 原先各持一份 ~90% 相同的 4 段结构。
-   */
-  async showOrderEditCard(
-    value: { orderId?: string; offset?: number },
-    ctx: CommandContext,
-    opts: {
-      title: string;
-      hint: string;
-      inputName: string;
-      placeholder: string;
-      defaultValue: string;
-      inputCmd: 'order.aliasInput' | 'order.textInput';
-      maxLength?: number;
-    },
-  ): Promise<CardActionResponse | void> {
-    return orderActions.showOrderEditCard(this, value, ctx, opts);
-  }
-
-  /** 编辑卡的公共取件：重读 store 并按 orderId 定位（alias/text 两个编辑 handler 共用）。 */
-  findOrderForEdit(orderId?: string) {
-    return orderActions.findOrderForEdit(this, orderId);
-  }
-
-  async handleOrderAliasEdit(
-    value: { orderId?: string; offset?: number },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleOrderAliasEdit(this, value, ctx);
-  }
-
-  /**
-   * Handle order.aliasInput: 提交别名（绑/改/解绑），随后重渲染 /order 列表卡。
-   * 留空 = 解绑；非空按命名规则 + 全局唯一校验，失败仅 toast 不重渲染。
-   */
-  async handleOrderAliasInput(
-    value: {
-      orderId?: string;
-      offset?: number;
-      inputValue?: string;
-      formValue?: Record<string, unknown>;
-    },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleOrderAliasInput(this, value, ctx);
-  }
-
-  /** Handle order.aliasRemove: 删除某条指令的别名并原地重渲染列表卡。 */
-  async handleOrderAliasRemove(
-    value: { orderId?: string; offset?: number },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleOrderAliasRemove(this, value, ctx);
-  }
-
-  /**
-   * Handle order.textEdit: 展示指令文本编辑卡（input，回车/完成键提交）。
-   * 预填当前 text（完整内容，不截断——input 组件有自有滚动条）；
-   * 提交 `order.textInput` 处理（trim + 长度校验 + OrderStore.updateText）。
-   * 完全镜像 handleOrderAliasEdit 的 4 段结构（reload → find → 构造 editCard →
-   * updateCardInPlace）。
-   */
-  async handleOrderTextEdit(
-    value: { orderId?: string; offset?: number },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleOrderTextEdit(this, value, ctx);
-  }
-
-  /**
-   * Handle order.textInput: 提交指令文本编辑。校验 orderId → OrderStore.updateText
-   * （store 内部统一 trim + 空/超长校验）。成功 toast + 原地重渲染列表卡（同
-   * handleOrderAliasInput 语义：toast-only 响应会让飞书停留在 pre-click 编辑卡，
-   * 必须把 card 放进 callback 响应体）；失败仅 error toast。
-   * 保留 usedAt / alias / createdAt（OrderStore.updateText 只动 text 字段）。
-   */
-  async handleOrderTextInput(
-    value: {
-      orderId?: string;
-      offset?: number;
-      inputValue?: string;
-      formValue?: Record<string, unknown>;
-    },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleOrderTextInput(this, value, ctx);
-  }
-
-  /**
-   * Handle ws.use card action: switch to the cwd, then refresh the /ws
-   * list card in place so "recent" sort order is immediately visible.
-   *
-   * Unlike the command-line `/ws use` (which returns text), the card action
-   * uses toast + inplace refresh for a cleaner UX (matching ws.remove/ws.sort).
-   * If auto-resume produces a card, it is sent as a separate reply.
-   */
-  async handleWsUse(
-    value: { name?: string; offset?: number; q?: string },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse> {
-    return orderActions.handleWsUse(this, value, ctx);
-  }
-
-  /**
-   * Handle ws.remove: remove the cwd alias and refresh the /ws list card
-   * in place (mirrors handleOrderDelete). Without this the stale alias would
-   * remain visible on the card the user just clicked.
-   */
-  async handleWsRemove(
-    value: { name?: string; offset?: number; q?: string },
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return orderActions.handleWsRemove(this, value, ctx);
-  }
-
-  /**
-   * Handle ws.page: paginate the /ws list in place.
-   * Mirrors handleOrderPage — updates the same card, never sends a new one.
-   */
-  async handleWsPage(value: CardActionPayload, ctx: CommandContext): Promise<CardActionResponse> {
-    return orderActions.handleWsPage(this, value, ctx);
-  }
-
-  /**
-   * Handle ws.filter: 按搜索框提交的关键词重新渲染列表卡。
-   * offset 恒重置为 0（新筛选从第 1 页开始）；提交空串 = 清除筛选。
-   */
-  async handleWsFilter(value: CardActionPayload, ctx: CommandContext): Promise<CardActionResponse> {
-    return orderActions.handleWsFilter(this, value, ctx);
-  }
-
-  /**
-   * Handle ws.sort: toggle sort preference and refresh the /ws list card.
-   * Sort preference is memory-only (not persisted); restart resets to 'recent'.
-   */
-  async handleWsSort(value: CardActionPayload, ctx: CommandContext): Promise<CardActionResponse> {
-    return orderActions.handleWsSort(this, value, ctx);
-  }
-
-  /**
-   * `ls.file` card button: send file to Feishu, rejecting if > 30MB.
-   */
-  async cardLsFile(target: string | undefined, ctx: CommandContext): Promise<void> {
-    return lsActions.cardLsFile(this, target, ctx);
-  }
-
-  /**
-   * 校验并发送本地文件到飞书（≤30MB）。成功返回 null（文件已发出），失败返回
-   * 错误 CommandResult 由调用方展示。
-   *
-   * `/download` 与 `ls.file` 卡片按钮共用，避免两处重复 30MB/存在性校验。
-   */
-  async deliverFileToFeishu(resolved: string, ctx: CommandContext): Promise<CommandResult | null> {
-    return lsActions.deliverFileToFeishu(this, resolved, ctx);
-  }
-
-  // --- PendingConfig 辅助方法 ---
-
-  /** 确保 pendingConfig 已初始化（从当前 config 克隆） */
-  ensurePendingConfig(): void {
-    return configActions.ensurePendingConfig(this);
-  }
-
-  /**
-   * 记住一张 config 卡片 messageId（有界：超限丢最早的一张）。
-   * 无 messageId 的调用（测试/文本路径）不登记。
-   */
-  rememberConfigCard(messageId: string | undefined): void {
-    return configActions.rememberConfigCard(this, messageId);
-  }
-
-  /**
-   * 把当前草稿刷到所有已知 config 卡片上（后台渲染队列调用）。
-   * 被点击的卡由回调响应体的 `card` 字段原地替换，这里只刷兄弟卡；
-   * `excludeMessageId` 跳过它，避免同消息重复 PATCH 触发飞书 230429。
-   * 返回成功 PATCH 数。
-   */
-  async refreshConfigCards(excludeMessageId?: string): Promise<number> {
-    return configActions.refreshConfigCards(this, excludeMessageId);
-  }
-
-  /** 调度后台渲染（同步返回，不等待任何网络写）。 */
-  scheduleConfigRender(req: import('./actions/config-render.js').ConfigRenderRequest): void {
-    scheduleConfigRender(this, req);
   }
 
   /** 测试/关停用：冲刷合并窗口并等待后台渲染队列排空。 */
@@ -1480,86 +870,12 @@ export class CommandRouter {
       if (after === slot.before) {
         return;
       }
-      this.scheduleConfigRender({
+      scheduleConfigRender(this, {
         ctx,
         refreshCatalogs: false,
         skipRemember: true,
       });
     });
-  }
-
-  /**
-   * 把一次字段变更交给当前 agent 的 config builder（处理 provider→model 这类
-   * 依赖关系），逐条写进草稿。`config.set`（下拉）与 `config.input`（输入框提交）
-   * 共用同一套应用逻辑。apply 段只做内存操作，卡片由响应体 + 后台队列更新。
-   */
-  async applyConfigFieldChange(
-    key: string,
-    newValue: string,
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return configActions.applyConfigFieldChange(this, key, newValue, ctx);
-  }
-
-  /**
-   * 串行化 config.* 卡片回调（修复连击卡死 bug）。
-   *
-   * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，不进 bridge 的
-   * 串行队列；多次快速点击下拉/文本框会并发读写 `pendingConfig` 并同时调
-   * `updateCardInPlace` → 两个 patch 请求乱序到达飞书，后到达的 patch（点击 1
-   * 的旧卡片）覆盖先到达的 patch（点击 2 的新卡片），用户看到控件卡死。
-   *
-   * 此方法把所有 config.* 动作串成一个 Promise chain：每个动作等前一个动作
-   * 的 `updateCardInPlace` 完全 settle 后再读 `pendingConfig`。
-   */
-  enqueueConfigAction(
-    value: CardActionPayload,
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return configActions.enqueueConfigAction(this, value, ctx);
-  }
-
-  /** 实际的 config.* 分发逻辑（在串行队列内执行） */
-  /** config.* 卡片动作分发（public：测试直接调用，替代 as unknown as）。 */
-  async dispatchConfigAction(
-    value: CardActionPayload,
-    ctx: CommandContext,
-  ): Promise<CardActionResponse | void> {
-    return configActions.dispatchConfigAction(this, value, ctx);
-  }
-
-  /** 设置嵌套属性值（仅修改内存对象，不写盘） */
-  /** 在 pendingConfig 上按 dot-separated key 设置嵌套值（config 卡片编辑用）。 */
-  setNestedValue(target: AppConfig, key: string, value: unknown): void {
-    return configActions.setNestedValue(this, target, key, value);
-  }
-
-  diffConfig(original: AppConfig, pending: AppConfig): Record<string, string | undefined> {
-    return configActions.diffConfig(this, original, pending);
-  }
-
-  /**
-   * config 写盘后的运行时传播（自 config.save 卡片路径抽出，卡片保存与
-   * `/config <key> <value>` 文本直写两条路径共用）。
-   *
-   * 1. bridge 运行时值同步：setConfig + idle watchdog timeout；
-   * 2. agent 配置或 defaultAgent 变更 → clearRunners（否则 runner 缓存继续用旧
-   *    配置值，/status 与真实 run 自相矛盾）；
-   * 3. defaultAgent 切换 → 旧 agent session 存 previousSessions、新 agent 恢复
-   *    或清空（等效 /new）；
-   * 4. 当前 agent 配置变更 → syncAgentChoices 并原子写盘（禁裸同步写盘，
-   *    写一半崩溃会截断 config.yaml 导致 bridge 起不来）。
-   *
-   * @param updates 以 config 路径形式给出的变更 key（卡片路径来自 diffConfig；
-   *   直写路径传 mapAgentKey(key)，保证 pi./codex./opencode./kimi. 命中 agents.*）。
-   * @returns 结构化切换结果（含 notice 文案 + 新 agent/sessionId 信息）
-   */
-  propagateConfigSave(
-    oldDefaultAgent: AgentKind,
-    updates: Record<string, string | undefined>,
-    ctx: CommandContext,
-  ): ConfigSwitchResult {
-    return configActions.propagateConfigSave(this, oldDefaultAgent, updates, ctx);
   }
 
   async executeCommand(message: string, ctx: CommandContext): Promise<CommandResult | null> {
@@ -1585,190 +901,26 @@ export class CommandRouter {
     return dispatchCommand(this, cmd, args, ctx);
   }
 
-  // --- Command implementations ---
+  // --- 测试与入口层使用的公开 seam ---
+  // 路由表已直接调用 actions 函数；这里只保留测试/入口真正调用的少数入口，
+  // 不再为每个卡片动作维护一层同名转发。
 
   cmdHelp(): CommandResult {
     return commandActions.cmdHelp(this);
   }
 
-  /** /status 实现（public：测试直接调用，替代 as any）。 */
   cmdStatus(ctx: CommandContext): CommandResult {
     return commandActions.cmdStatus(this, ctx);
   }
 
-  cmdPs(ctx: CommandContext): CommandResult {
-    return commandActions.cmdPs(this, ctx);
+  cmdOrder(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+    return commandActions.cmdOrder(this, args, ctx, offset);
   }
 
-  async cmdStop(ctx: CommandContext): Promise<CommandResult | null> {
-    return commandActions.cmdStop(this, ctx);
+  cmdWs(args: string[], ctx: CommandContext, offset = 0, q?: string): CommandResult {
+    return commandActions.cmdWs(this, args, ctx, offset, q);
   }
 
-  async cmdExit(): Promise<CommandResult> {
-    return commandActions.cmdExit(this);
-  }
-
-  cmdRestart(): CommandResult {
-    return commandActions.cmdRestart(this);
-  }
-
-  /**
-   * /update: check for newer version and upgrade if available.
-   * /update check: only check, don't upgrade.
-   *
-   * Flow: check version → if newer, install → report success (no auto-restart).
-   */
-  async cmdUpdate(args: string[], ctx: CommandContext): Promise<CommandResult> {
-    return commandActions.cmdUpdate(this, args, ctx);
-  }
-
-  /**
-   * /clone [name] — 复制分身：进入 clone 状态机（发二维码、等扫码、自动绑定）。
-   * 全程由 CloneSession 自己经 connector 发消息（含二维码图片），故返回 null。
-   */
-  async cmdClone(args: string[], ctx: CommandContext): Promise<CommandResult | null> {
-    return commandActions.cmdClone(this, args, ctx);
-  }
-
-  cmdNew(ctx: CommandContext): CommandResult {
-    return commandActions.cmdNew(this, ctx);
-  }
-
-  cmdCd(args: string[], ctx: CommandContext): CommandResult {
-    return commandActions.cmdCd(this, args, ctx);
-  }
-
-  readSessionDisplayState(
-    sessionId: string,
-    cwd: string,
-    opts?: { agentKind?: string; maxEvents?: number },
-  ): {
-    events: AgentSessionContentEvent[];
-    usage?: SessionDisplayUsage;
-    isActive: boolean;
-    /**
-     * 会话在宿主侧仍有在途 turn（仅 DSH 的 isSessionActive 是服务端 running
-     * 事实）。与 isActive（本进程 activeRun）分开：宿主 turn 没有本地 runId，
-     * 不能渲染 stop，但压缩同样会被拒，必须据此隐藏 Compact。
-     */
-    hostRunning: boolean;
-    aiTitle?: string;
-    recap?: string;
-    displayTitle?: string;
-    /** runId of the in-process activeRun, when activeRunning is true.
-     * Used to bind the stop button to the real UUID runId (not sessionId),
-     * since bridge.interruptCurrentRun matches on active.runId. */
-    activeRunRunId?: string;
-  } {
-    return commandActions.readSessionDisplayState(this, sessionId, cwd, opts);
-  }
-
-  /**
-   * Shared logic for switching cwd with user feedback.
-   * Used by cmdCd, cmdWs use, and handleLsSwitch to ensure consistent behavior:
-   * 1. Set cwd (and clear sessionId per §9.1)
-   * 2. Auto-resume newest session if available
-   * 3. Return appropriate CommandResult (auto-resume card or plain text)
-   */
-  switchCwdAndNotify(userId: string, canonical: string, _ctx: CommandContext): CommandResult {
-    return commandActions.switchCwdAndNotify(this, userId, canonical, _ctx);
-  }
-
-  /** Build card for auto-resumed session with new session button */
-  buildAutoResumeCard(
-    cwd: string,
-    session: { sessionId: string; summary: string },
-    _ctx: CommandContext,
-  ): CommandResult {
-    return commandActions.buildAutoResumeCard(this, cwd, session, _ctx);
-  }
-
-  /**
-   * Shared body of the two "resume-like" cards（cwd 切换后的 auto-resume 与
-   * config.save 换 agent）：两者都是同一序列 readSessionDisplayState →
-   * buildResumeActionButtons → buildSessionHistoryCard，差异仅 4 处——
-   * Compact 按钮（仅 auto-resume，canCompactSession 门控）、标题文案、
-   * headerText 的「已恢复…会话」行与可选尾部行、空会话占位——全部参数化，
-   * 共享序列只留一份（Clean Code DRY）。
-   */
-  buildResumeLikeCard(opts: {
-    cwd: string;
-    sessionId: string;
-    /** 卡片归属 agent：标题显示名、卡片 agentKind，也是 reader 的寻址键。 */
-    agentKind: AgentKind;
-    /** Compact 按钮载荷；仅 auto-resume 入口在 canCompactSession 成立时传入。 */
-    compact?: { sessionId: string; agentKind: string };
-    /** 标题主干，如 自动恢复会话 / 切换 Agent；进行中恒为 ⏳ …（完成中）。 */
-    titleBase: string;
-    /** 非进行中状态的标题图标（🔁 / 🔀）。 */
-    idleIcon: string;
-    /** headerText 第二行（含加粗 sessionId）。 */
-    resumedLine: string;
-    /** headerText 可选尾行——config-switch 的切换语义 notice 必须随卡可见。 */
-    headerTail?: string;
-    /** 空会话占位文案；仅 config-switch 卡覆盖。 */
-    emptyPlaceholder?: string;
-  }): CommandResult {
-    return commandActions.buildResumeLikeCard(this, opts);
-  }
-
-  /**
-   * Build card for config.save agent switch.
-   * When the new agent has a restored session, renders a Resume card (shared
-   * body via buildResumeLikeCard) with session history + stop/new buttons.
-   * When the session was cleared, renders a compact notice card instead.
-   */
-  buildConfigSwitchCard(switchResult: ConfigSwitchResult, ctx: CommandContext): CommandResult {
-    return configActions.buildConfigSwitchCard(this, switchResult, ctx);
-  }
-
-  /**
-   * Whether a session of the given agent kind can be compacted from a resume
-   * card. duck-typing — check if the runner has `runCompact`
-   * (codex app-server, kimi acp), instead of hardcoding agentKind === 'codex'.
-   */
-  canCompactSession(agentKind: string, cwd?: string): boolean {
-    return commandActions.canCompactSession(this, agentKind, cwd);
-  }
-
-  /**
-   * Assemble the action buttons for a resume / session-history card.
-   * Shared by buildAutoResumeCard, buildConfigSwitchCard, and cmdResume so the
-   * button set (stop / compact / new-session) follows one contract instead of
-   * drifting per call site.
-   *
-   * - stop: only when the session has an in-memory active run (isActive), bound
-   *   to the real activeRun.runId so bridge.interruptCurrentRun can match.
-   * - compact: only when a compact-capable runner applies and the session is
-   *   not running (a live run would occupy the runner, so compaction would
-   *   fail). The caller passes `compact` only when canCompactSession holds.
-   * - new-session: when requested (always shown on resume cards).
-   */
-  buildResumeActionButtons(opts: {
-    isActive: boolean;
-    activeRunRunId?: string;
-    cwd: string;
-    compact?: { sessionId: string; agentKind: string };
-    /** 宿主侧仍有 turn：绑定 sessionId/cwd/agent，走 session/cancel。 */
-    hostStop?: { sessionId: string; agentKind: string; cwd: string };
-    newSession?: boolean;
-  }): object[] {
-    return commandActions.buildResumeActionButtons(this, opts);
-  }
-
-  /**
-   * `/ls` 实现（public：测试直接调用，替代 as unknown as）。
-   *
-   * @param args    [] 列出 cwd；[path] 列出指定目录（或文件）
-   * @param offset  分页起点（条目数）
-   * @param rootDir 浏览起点：卡片「返回」按钮回到这里。省略时默认 = 本次列出的
-   *                目录（`/ls <dir>` 的起点即该目录），因此「返回」不会把用户
-   *                丢回 工作目录。
-   * @param q       关键词筛选：只匹配**当前层**条目名（不递归），大小写不敏感。
-   *                省略/空 = 无筛选。
-   * @param trail   上级目录原页码（「上级/返回」回到进入子目录时所在页）。
-   *                省略 = 上级都从第 1 页开始。
-   */
   cmdLs(
     args: string[],
     ctx: CommandContext,
@@ -1780,35 +932,6 @@ export class CommandRouter {
     return commandActions.cmdLs(this, args, ctx, offset, rootDir, q, trail);
   }
 
-  /**
-   * `/download <path>`（别名 `/d`）：把本地文件直接发送到飞书。
-   *
-   * 路径解析与 `/ls` 一致：`~` 展开到 home；相对路径基于当前 cwd（无 cwd 时
-   * 必须给绝对路径）。成功时文件本身即回复，返回 null（不额外发文本）。
-   */
-  async cmdDownload(args: string[], ctx: CommandContext): Promise<CommandResult | null> {
-    return commandActions.cmdDownload(this, args, ctx);
-  }
-
-  cmdWs(args: string[], ctx: CommandContext, offset = 0, q?: string): CommandResult {
-    return commandActions.cmdWs(this, args, ctx, offset, q);
-  }
-
-  /**
-   * DSH /resume preset 一致性校验：返回 mismatch 详情，或 undefined（一致/不可判定）。
-   *
-   * session 的 preset 在创建时固定（§2.1）。通过 listSessions 拿到目标 session 的
-   * agentPreset 与当前配置比对：不一致时不静默复用（返回提示），一致或查询失败
-   * （无法判定）时不阻断，避免 DSH 离线导致 /resume 完全不可用。
-   */
-  dshPresetMismatch(
-    reader: AgentSessionReader,
-    sessionId: string,
-    cwd: string,
-  ): { sessionPreset: string; currentPreset: string } | undefined {
-    return commandActions.dshPresetMismatch(this, reader, sessionId, cwd);
-  }
-
   cmdResume(args: string[], ctx: CommandContext, offset = 0): CommandResult {
     return commandActions.cmdResume(this, args, ctx, offset);
   }
@@ -1817,96 +940,38 @@ export class CommandRouter {
     return commandActions.cmdActive(this, _args, _ctx, offset);
   }
 
-  /**
-   * Build CardKit 2.0 /active card from bridge memory (not file system).
-   * Shows only runs that were started by THIS bridge process.
-   * Paginates with ACTIVE_PAGE_SIZE (default 20) items per page.
-   */
-  buildActiveCardFromMemory(
-    activeRuns: Array<{
-      runId: string;
-      sessionId: string;
-      cwd: string;
-      userId: string;
-      chatId: string;
-      terminal: string;
-    }>,
-    activeBashRuns: Array<{
-      runId: string;
-      cwd: string;
-      userId: string;
-      chatId: string;
-      terminal: string;
-      command: string;
-    }>,
-    offset = 0,
-  ): CommandResult {
-    return commandActions.buildActiveCardFromMemory(this, activeRuns, activeBashRuns, offset);
+  resolveOrderExecForQueue(orderId: string): { orderText: string; internalKey: string } | null {
+    return orderActions.resolveOrderExecForQueue(this, orderId);
   }
 
-  /**
-   * Render one section of the /active（/ps）card — the agent-runs and
-   * bash-runs sections are the same loop (title line → per-entry rows →
-   * stop button → trailing hr) and differ only in the title and the two
-   * per-entry content rows, which the caller supplies via `renderRows`.
-   *
-   * Cross-section offset accounting (caller threads `remaining`/`skipped`
-   * through the returned value): entries rendered decrement `remaining` and
-   * consume the offset (`skipped` → 0, so the next section renders from its
-   * own head); a section the offset/page has moved past deducts its full size
-   * from `skipped` instead, so agent runs eat the offset before bash runs do.
-   */
-  appendActiveCardSection<T extends { runId: string; cwd: string; terminal: string }>(
-    elements: object[],
-    runs: T[],
-    title: string,
-    renderRows: (run: T, statusLabel: string) => object[],
-    remaining: number,
-    skipped: number,
-  ): { remaining: number; skipped: number } {
-    return commandActions.appendActiveCardSection(
-      this,
-      elements,
-      runs,
-      title,
-      renderRows,
-      remaining,
-      skipped,
-    );
+  mintQueueTaskKey(kind: string, id?: string): string {
+    return queueActions.mintQueueTaskKey(this, kind, id);
   }
 
-  async cmdConfig(args: string[], ctx: CommandContext): Promise<CommandResult> {
-    return configActions.cmdConfig(this, args, ctx);
-  }
-
-  /**
-   * 卡片构建前的动态清单预取。
-   *
-   * - **DSH**：`/config` 打开时强制刷新模型/预设目录，Web UI 刚新增的 provider
-   *   立即可见；失败回退固定兜底清单。
-   * - **CodeBuddy**：模型清单只随 ACP `session/new` 下发，且目录是
-   *   f(登录态, 区域)。这里按账号指纹（`settings.json` 的 mtime+size）决定是否
-   *   重探：切换 CodeBuddy 登录后第一次打开 `/config` 就能看到新模型，而不是
-   *   等下一条消息 401 才被动重建。指纹/区域变化时顺带重置持久 sessionId 与
-   *   runner（它们绑在旧身份上，不重置会在失效端点重放 401）。
-   *
-   * 预取失败不阻断——两个 builder 内部都有兜底（DSH 固定清单、CodeBuddy 文本输入）。
-   */
-  async prefetchConfigCardCatalogs(force = false, ctx?: CommandContext): Promise<void> {
-    return configActions.prefetchConfigCardCatalogs(this, force, ctx);
-  }
-
-  /** Build an interactive config card with CardKit 2.0 tabs + batch save */
   buildConfigCard(): CommandResult {
     return configActions.buildConfigCard(this);
   }
 
-  /** /order 实现（public：测试直接调用）。 */
-  cmdOrder(args: string[], ctx: CommandContext, offset = 0): CommandResult {
-    return commandActions.cmdOrder(this, args, ctx, offset);
+  prefetchConfigCardCatalogs(force = false, ctx?: CommandContext): Promise<void> {
+    return configActions.prefetchConfigCardCatalogs(this, force, ctx);
   }
 
-  resolveOrderTarget(target: string): OrderEntry | undefined {
-    return orderActions.resolveOrderTarget(this, target);
+  ensurePendingConfig(): void {
+    configActions.ensurePendingConfig(this);
+  }
+
+  setNestedValue(target: AppConfig, key: string, value: unknown): void {
+    configActions.setNestedValue(this, target, key, value);
+  }
+
+  diffConfig(original: AppConfig, pending: AppConfig): Record<string, string | undefined> {
+    return configActions.diffConfig(this, original, pending);
+  }
+
+  dispatchConfigAction(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    return configActions.dispatchConfigAction(this, value, ctx);
   }
 }

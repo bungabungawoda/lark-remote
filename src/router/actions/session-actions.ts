@@ -6,6 +6,7 @@ import { resolveAgentKind } from '../../agent-kinds.js';
 import { RESUME_PAGE_SIZE } from '../commands/resume.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
+import * as commandActions from './command-actions.js';
 import {
   ACTIVE_PAGE_SIZE,
   applyNewSession,
@@ -40,7 +41,10 @@ export async function handleResumeUse(
     await host.bridge.sendResult({ text: '缺少 sessionId，请重新从 /resume 列表选择会话' }, ctx);
     return;
   }
-  await host.bridge.sendResult(host.cmdResume([resolvedAgent, value.sessionId], ctx), ctx);
+  await host.bridge.sendResult(
+    commandActions.cmdResume(host, [resolvedAgent, value.sessionId], ctx),
+    ctx,
+  );
 }
 
 /** new-session: 清空当前会话绑定，下一条消息开始全新对话。 */
@@ -72,7 +76,12 @@ export async function handleResumePage(
   }
 
   // cmdResume clamps stale/out-of-range offsets and re-fetches internally.
-  const result = host.cmdResume([resolvedAgent, String(pageSize)], ctx, alignedOffset);
+  const result = commandActions.cmdResume(
+    host,
+    [resolvedAgent, String(pageSize)],
+    ctx,
+    alignedOffset,
+  );
   if (!result.card) {
     // e.g. the agent has no sessions in this directory — surface an error
     // toast instead of a contradictory success toast plus text reply.
@@ -102,7 +111,7 @@ export async function handleActivePage(
     return { toast: { type: 'error', content: error } };
   }
 
-  const result = host.cmdActive([], ctx, alignedOffset);
+  const result = commandActions.cmdActive(host, [], ctx, alignedOffset);
   if (!result.card) {
     return { toast: { type: 'error', content: '当前没有正在进行中的任务' } };
   }

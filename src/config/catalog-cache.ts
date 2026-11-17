@@ -47,6 +47,8 @@ interface Snapshot<T> {
   value: T;
   ts: number;
   failed: boolean;
+  /** true = 来自异步 loader；false = 冷启动同步占位（空清单不代表探测失败）。 */
+  fromAsync: boolean;
 }
 
 const DEFAULT_TTL_MS = 5 * 60_000;
@@ -95,7 +97,7 @@ export class SyncCatalog<T, C = void> {
       value = this.opts.fallback();
       failed = true;
     }
-    this.snapshot = { key, value, ts: Date.now(), failed };
+    this.snapshot = { key, value, ts: Date.now(), failed, fromAsync: false };
     return value;
   }
 
@@ -108,16 +110,18 @@ export class SyncCatalog<T, C = void> {
       try {
         const value = await this.opts.loadAsync(ctx as C);
         const failed = this.opts.isEmpty?.(value) ?? false;
-        this.snapshot = { key, value, ts: Date.now(), failed };
+        this.snapshot = { key, value, ts: Date.now(), failed, fromAsync: true };
         return value;
       } catch (err) {
         getLogger().warn(`[catalog] ${this.opts.agent} refresh failed: ${(err as Error).message}`);
         // 负缓存保留上次成功快照：刷新失败不该让下拉框变空。
         this.snapshot = {
           key,
-          value: previous?.value ?? this.opts.fallback(),
+          // 键漂移后旧快照属于另一个身份，不能拿来冒充新身份的清单。
+          value: previous?.key === key ? previous.value : this.opts.fallback(),
           ts: Date.now(),
           failed: true,
+          fromAsync: true,
         };
         return this.snapshot.value;
       } finally {
@@ -126,6 +130,25 @@ export class SyncCatalog<T, C = void> {
     })();
     this.inFlight = task;
     return task;
+  }
+
+  /**
+   * 异步读：快照仍新鲜则直接返回，过期/缺失/键漂移时等待一次刷新。
+   * 与 `read` 的区别是调用方愿意等 IO；与 `refresh` 的区别是尊重 TTL。
+   */
+  refreshIfStale(keyOverride?: string, ctx?: C): Promise<T> {
+    const key = keyOverride ?? this.opts.key();
+    const snap = this.snapshot;
+    if (snap?.key === key) {
+      // 冷启动同步占位若为空，必须让异步 loader 真跑一次；否则负缓存会把
+      // 「还没探测」误判成「探测失败」，首次打开配置卡永远拿不到清单。
+      if (!snap.fromAsync && snap.failed) return this.refresh(keyOverride, ctx);
+      const ttl = snap.failed
+        ? (this.opts.negativeTtlMs ?? DEFAULT_NEGATIVE_TTL_MS)
+        : (this.opts.ttlMs ?? DEFAULT_TTL_MS);
+      if (Date.now() - snap.ts < ttl) return Promise.resolve(snap.value);
+    }
+    return this.refresh(keyOverride, ctx);
   }
 
   /** 启动预热：fire-and-forget，让首次打开配置卡就命中快照。 */

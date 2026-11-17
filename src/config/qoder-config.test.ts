@@ -232,6 +232,19 @@ describe('refreshQoderConfig / loadQoderConfig', () => {
     expect(spawnCount(counterFile)).toBe(2);
   });
 
+  it('a cold sync read does not suppress the first async refresh', async () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel"]', counterFile);
+
+    // 首帧 buildFields 先同步读（冷启动占位空清单），随后才点火异步刷新。
+    // 占位快照不能被当成「探测失败」的负缓存，否则第一次打开卡片永远不探测。
+    loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
+
+    expect(result.modelOptions).toEqual(['qfmodel']);
+    expect(spawnCount(counterFile)).toBe(2);
+  });
+
   it('cache is keyed by binary: switching binary re-spawns (E6)', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel-cn"]', counterFile);
@@ -244,6 +257,31 @@ describe('refreshQoderConfig / loadQoderConfig', () => {
     const intl = await refreshQoderConfig('qoder', tmpDir);
     expect(intl.modelOptions).toEqual(['qfmodel-intl']);
     expect(spawnCount(counterFile)).toBe(4);
+  });
+
+  it('a failed probe for a new binary does not reuse the old binary list', async () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel-cn"]', counterFile);
+    await refreshQoderConfig('qodercn', tmpDir);
+
+    // 国际版 binary 不存在：探测失败时不能把 CN 的模型清单冒充成国际版清单。
+    const intl = await refreshQoderConfig('qoder-intl-missing', tmpDir);
+    expect(intl.modelOptions).toEqual([]);
+  });
+
+  it('a partial probe for a new binary does not inherit the old binary field', async () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel-cn"]', counterFile, {
+      effortList: 'auto, low',
+    });
+    await refreshQoderConfig('qodercn', tmpDir);
+
+    // 国际版模型探测成功、档位探测为空：档位不能沿用 CN 的清单。
+    writeListModelsBin('qoder', '["qfmodel-intl"]', counterFile);
+    const intl = await refreshQoderConfig('qoder', tmpDir);
+
+    expect(intl.modelOptions).toEqual(['qfmodel-intl']);
+    expect(intl.effortOptions).toEqual([]);
   });
 
   it('warns and falls back to an empty list on a non-zero --list-models exit (E6)', async () => {

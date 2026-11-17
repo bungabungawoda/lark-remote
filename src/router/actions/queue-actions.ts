@@ -1,4 +1,4 @@
-// 排队卡动作族：实现从 CommandRouter 搬出，类上保留同名薄委托。
+// 排队卡动作族：路由表直接调用本模块。
 import type { CommandContext } from '../../bridge/index.js';
 import type { AgentBinding } from '../../bridge/queue-manager.js';
 import { getLogger } from '../../logger/index.js';
@@ -28,7 +28,7 @@ export async function handleQueueCancel(
   value: { cwd?: string; messageId?: string },
   ctx: CommandContext,
 ): Promise<void> {
-  const payload = await host.queuePayloadOrReply(value, ctx);
+  const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
 
@@ -69,7 +69,7 @@ export async function handleQueueImmediate(
   value: { cwd?: string; messageId?: string },
   ctx: CommandContext,
 ): Promise<void> {
-  const payload = await host.queuePayloadOrReply(value, ctx);
+  const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
 
@@ -124,7 +124,8 @@ export async function handleQueueImmediate(
     // the queue position: enqueue can only append to the promise chain tail,
     // which would put the edited task behind tasks queued after it.
     if (targetTask.editedMessage) {
-      host.registerEditedReplacement(
+      registerEditedReplacement(
+        host,
         cwd,
         messageId,
         targetTask.editedMessage,
@@ -149,7 +150,7 @@ export async function handleQueueImmediate(
     getLogger().info(`[router] queue.immediate: stopped=${stopped} unconfirmed=${stopUnconfirmed}`);
 
     // 3. Remove all tasks BEFORE this one (by position in the current queue).
-    const removedCount = host.clearTasksAheadOfTarget(cwd, messageId);
+    const removedCount = clearTasksAheadOfTarget(host, cwd, messageId);
 
     // 4. DO NOT remove the target task - keep it in queue to execute immediately
     // The queue will naturally execute it after the current task (which we just stopped)
@@ -160,7 +161,8 @@ export async function handleQueueImmediate(
     // the task has begun, because getQueuedTask then returns undefined.
     const latestTask = host.bridge.getQueuedTask(cwd, messageId);
     if (latestTask?.editedMessage) {
-      host.registerEditedReplacement(
+      registerEditedReplacement(
+        host,
         cwd,
         messageId,
         latestTask.editedMessage,
@@ -170,7 +172,7 @@ export async function handleQueueImmediate(
     }
 
     // 4.5/6. 按「目标此刻真的是下一个吗」给唯一一份用户可见反馈。
-    await host.reportImmediateOutcome({
+    await reportImmediateOutcome(host, {
       cwd,
       messageId,
       ctx,
@@ -296,7 +298,7 @@ export async function handleQueueDiagnose(
   value: { cwd?: string; messageId?: string; userId?: string; chatId?: string },
   ctx: CommandContext,
 ): Promise<void> {
-  const payload = await host.queuePayloadOrReply(value, ctx);
+  const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
   const targetUserId = value.userId ?? ctx.userId;
@@ -386,7 +388,7 @@ export async function handleQueueEdit(
   value: { cwd?: string; messageId?: string },
   ctx: CommandContext,
 ): Promise<void> {
-  const payload = await host.queuePayloadOrReply(value, ctx);
+  const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
 
@@ -466,7 +468,7 @@ export async function handleQueueInput(
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
   const newMessage = value.inputValue ?? (value.formValue?.['newMessage'] as string | undefined);
-  const payload = await host.queuePayloadOrReply(value, ctx);
+  const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
 
@@ -495,7 +497,7 @@ export async function handleQueueInput(
     // toast/card field).
     return { toast: { type: 'info', content: '任务已不在队列中（可能已开始执行或被撤销）' } };
   }
-  host.registerEditedReplacement(cwd, messageId, newMessage, inputTask.binding, ctx);
+  registerEditedReplacement(host, cwd, messageId, newMessage, inputTask.binding, ctx);
 
   // Update the message preview (and editedMessage so handleQueueImmediate
   // re-enqueues the edited content instead of the stale original closure),

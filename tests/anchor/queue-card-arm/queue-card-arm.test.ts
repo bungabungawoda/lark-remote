@@ -246,8 +246,8 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
     // 没有可清理的条目）；T3 必须保持排队状态，并在 T2 结束后轮到自己执行。
     //
     // 缺失会导致什么问题：begin 路径对无 messageId 的任务走 `taskList.shift()`
-    // 兜底——它把**下一个** meta 任务从 queuedTasks/taskIndex 提前清掉。
-    // 自己轮到时取消检查（indexGet 找不到）直接 return 跳过，**永远不执行**
+    // 兜底——它把**下一个** meta 任务从 queuedTasks 提前清掉。
+    // 自己轮到时取消检查（按 key 找不到）直接 return 跳过，**永远不执行**
     // ——用户既没撤销也没编辑，消息静默消失；其排队卡残留 "⏳ 消息排队中" 且按钮
     // 可点，点「撤销」报 "该消息不在队列中（可能已开始执行）"（事实是根本没开始），
     // 点「立即执行」报 "该消息已开始执行" 并顺带停掉当前任务——卡片/提示与真实
@@ -330,7 +330,7 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
 
     // --- 步骤 5：T2 正常结束，T3 轮到自己 ---
     resolveT2();
-    // 修复前：T3 的 begin 取消检查 indexGet 找不到 → return 跳过，永远不执行。
+    // 修复前：T3 的 begin 取消检查按 key 找不到 → return 跳过，永远不执行。
     // 本用例钉住（期望 t3Started=true）。
     expect(await waitFor(() => t3Started)).toBe(true);
 
@@ -770,7 +770,7 @@ describe('QueueManager - immediate executing card must re-read live preview afte
     // 注释明文契约——"a membership guard re-checks the task right before the
     // card update"（成员资格都可能因 await 而变，任务内容同理）；锚点已
     // 确立执行卡展示的 preview 必须与实际执行内容一致（"不能显示 enqueue 时
-    // 冻结的旧预览"）。方法在守卫处已能通过 indexGet 拿到 live 任务，重新读取
+    // 冻结的旧预览"）。方法在守卫处已能通过队列查找拿到 live 任务，重新读取
     // preview 是同一契约的自然延伸。
     const { qm, sentCards, updatedCards, resolveSendCard } =
       makeQueueManagerWithPendingCard('card-preview-race-msg');
@@ -863,7 +863,7 @@ describe('QueueManager - cancelled task card must not be flipped back to executi
     // executing 再注册 executing 更新——映射 finally 删除发生在更新**之后**，
     // 于是两个更新都落卡，最终卡片状态取决于注册顺序而非队列事实。当前实现
     // updateQueueCardToExecuting 只查映射、不查任务是否仍在队列（begin 路径有
-    // indexGet 守卫，markQueueCardExecuting 路径没有），撤消卡被翻回执行态：
+    // 队列查找守卫，markQueueCardExecuting 路径没有），撤消卡被翻回执行态：
     // 用户看到"▶️ 已开始执行"但任务永远不会跑，也无法再撤销（按钮已禁用）。
     //
     // 依据：queue-manager.ts begin 路径注释明确声明契约——"a skipped/cancelled

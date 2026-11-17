@@ -63,7 +63,7 @@ function defaultRegistry(): SessionReaderRegistry {
   });
 }
 
-describe('config.save switch vs startup/resume/cd/syncAgentChoices entry points', () => {
+describe('config.save switch vs startup/resume/cd entry points', () => {
   let tmpDir: string;
   let sessionStore: SessionStore;
   let bridge: ReturnType<typeof createMockBridge>;
@@ -477,13 +477,13 @@ describe('config.save switch vs startup/resume/cd/syncAgentChoices entry points'
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBeUndefined();
   });
 
-  it('test_anchor_r9_agent_config_save_no_switch_notice_preserves_arrival_and_syncs_choices', async () => {
+  it('test_anchor_r9_agent_config_save_no_switch_notice_preserves_arrival', async () => {
     /**
      * ① 验证：当前 agent（codex）配置项变更（agents.codex.model）保存时不发切换
-     *    消息、不返回 toast，sessions/prev/arrival 全部原样；syncAgentChoices 把
-     *    agentChoices.codex.model 同步到内存 config 与 config.yaml（原子写盘）。
+     *    消息、不返回 toast，sessions/prev/arrival 全部原样；新模型落到内存
+     *    config 与 config.yaml。
      * ② 缺失/错误影响：若 agent 配置变更误发切换消息，用户收到虚假的 agent 切换
-     *    通知；若 sync 副作用破坏 session/arrival，后续切换判定错乱。
+     *    通知；若保存副作用破坏 session/arrival，后续切换判定错乱。
      * ③ 依据：「defaultAgent 未切换 → 不发切换消息、不返回 toast」+
      *    设计「userChangedOld 只在 config.save 切换时更新 arrival」。
      */
@@ -510,22 +510,19 @@ describe('config.save switch vs startup/resume/cd/syncAgentChoices entry points'
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBeUndefined();
 
-    const routerConfig = router.config;
-    expect(routerConfig.agentChoices?.codex?.model).toBe('codex-new-model');
+    expect(router.config.agents.codex?.model).toBe('codex-new-model');
     const yaml = fs.readFileSync(path.join(tmpDir, 'config.yaml'), 'utf8');
     expect(yaml).toContain('codex-new-model');
   });
 
-  it('test_anchor_r9_switch_plus_current_agent_config_save_restores_and_syncs', async () => {
+  it('test_anchor_r9_switch_plus_current_agent_config_save_restores', async () => {
     /**
      * ① 验证：同一次 config.save 同时切换 defaultAgent（codex→pi）并修改当前
      *    （新）agent 配置（agents.pi.model）时：无用户活动 → 恢复 prev[pi]=P 并发
-     *    「将继续之前的 session」；syncAgentChoices 同步 agentChoices.pi.model 且不
-     *    覆盖恢复分支的 arrival[pi]=P。
-     * ② 缺失/错误影响：若 agentChoices 同步写盘与切换的 session/arrival 副作用互相
-     *    覆盖，恢复后的到达基线丢失，下一次离开会被误判为用户活动。
-     * ③ 依据：设计恢复分支（setArrivalSessionId(new, prev)）
-     *    + agentChoices 原子写盘。
+     *    「将继续之前的 session」，且新模型写盘不覆盖恢复分支的 arrival[pi]=P。
+     * ② 缺失/错误影响：若配置写盘与切换的 session/arrival 副作用互相覆盖，
+     *    恢复后的到达基线丢失，下一次离开会被误判为用户活动。
+     * ③ 依据：设计恢复分支（setArrivalSessionId(new, prev)）。
      */
     makeRouter('codex');
     const userId = 'user1';
@@ -549,8 +546,7 @@ describe('config.save switch vs startup/resume/cd/syncAgentChoices entry points'
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBe('codex-session-C1');
 
-    const routerConfig = router.config;
-    expect(routerConfig.agentChoices?.pi?.model).toBe('glm-new');
+    expect(router.config.agents.pi?.model).toBe('glm-new');
     const yaml = fs.readFileSync(path.join(tmpDir, 'config.yaml'), 'utf8');
     expect(yaml).toContain('glm-new');
   });

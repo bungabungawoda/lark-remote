@@ -198,34 +198,9 @@ check still listed only five agents, so a card carrying dsh silently fell back t
 (wrong reader → "session not found"). Do not copy the agent list anywhere else; test stub
 registries use `AGENT_KINDS` too.
 
-### Step 10: Add a Branch in the Config Functions
-
-Add a case in the switch statement of `resolveAgentChoices` in `src/runner/resolve-agent-choices.ts`:
-
-```typescript
-case '<agent>':
-  if (!resolvedAny.agents) resolvedAny.agents = {};
-  if (!resolvedAny.agents.<agent>) resolvedAny.agents.<agent> = {};
-  if (!resolvedAny.agents.<agent>.model && agentChoicesAny.model) {
-    resolvedAny.agents.<agent>.model = agentChoicesAny.model;
-  }
-  break;
-```
-
-Similarly add in `src/runner/sync-agent-choices.ts`:
-
-```typescript
-case '<agent>':
-  if (agentCfg.model) {
-    if (!updatedAny.agentChoices.<agent>) updatedAny.agentChoices.<agent> = {};
-    updatedAny.agentChoices.<agent>.model = agentCfg.model;
-  }
-  break;
-```
-
 ## Verification
 
-After completing the 10 steps above, run the following verifications:
+After completing the 9 steps above, run the following verifications:
 
 ```bash
 # 1. Type check: a missing entry in AGENT_KINDS or any Record<AgentKind, ...>

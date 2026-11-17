@@ -1113,7 +1113,7 @@ runId 找、从不查当前 cwd，两条路径保持一致。用当前 cwd 收�
 
 ### 9.24 队列身份 key 每次入队铸造，不复用卡片 messageId
 
-排队条目的身份（`QueuedTask.messageId`，即 queuedTasks 定位、taskIndex 取消判据、
+排队条目的身份（`QueuedTask.messageId`，即 queuedTasks 定位、begin 路径取消判据、
 queueCardMessages 卡片更新的 key）必须与「一次入队动作」1:1。**飞书卡片的 messageId 是
 展示层 id，同一张卡可被点击 N 次（1:N）**，只能当回复目标（`taskMeta.feishuReplyTo`）。
 唯一铸造点是 `CommandRouter.mintQueueTaskKey(kind, id?)`；调用方是非即时卡片动作
@@ -1124,10 +1124,9 @@ queueCardMessages 卡片更新的 key）必须与「一次入队动作」1:1。*
 
 1. 位置显示：`sendQueueStatusCard` 用 `findIndex(t => t.messageId === 本次点击 id)` 定位，
    三次点击命中同一条最早的兄弟 → 三张排队卡都显示「位置: 第 1 位 / 前面还有 0 条」。
-2. 取消判据：入队无条件 `push` + `indexAdd` 覆盖（索引只留最后一条），第一条兄弟开始
-   执行时 `indexRemove` 删掉共享 key，其余兄弟 `indexGet` 为 `undefined` 被判
-   「cancelled」静默 `return`（且该 return 在更新卡片之前）→ 卡片永久停在
-   「⏳ 消息排队中」。
+2. 取消判据：入队无条件 `push`；轮到某条任务时 `beginQueuedTask` 用 `findIndex`
+   按 key 找自己并 `splice`，找不到才视为已撤销。撞 key 时 `findIndex` 与
+   `removeFromQueue` 都命中最早那条兄弟，撤销会作用到错误条目。
 3. 卡片更新：`queueCardMessages` 也用同一 key，后注册的覆盖先注册的 → 「▶️ 已开始执行」
    打在最后一张卡上。
 
@@ -1136,9 +1135,9 @@ queueCardMessages 卡片更新的 key）必须与「一次入队动作」1:1。*
 记得调」，漏一处卡片就永久停在「等待中」，而映射已被消费后再也修不回来。`updateQueueCardToCancelled` / `updateQueueCardToExecuting` 的卡片 PATCH 失败会
 重试一次——一次网络抖动不该让卡片停在旧状态；两次都失败才放弃（映射清理后无自动修正）。
 
-实测症状：三次点击只压缩一次，另外两张卡永久等待。`QueueManager.enqueue` 现在对撞 key
-打 `duplicate queue key` warn 作为 tripwire（不改行为，只留证据）——出现该日志说明有人
-又把外部 id 当队列身份用了。
+实测症状：三次点击后三张卡都显示「第 1 位」，撤销/执行态落到错误条目。`QueueManager.enqueue`
+现在对撞 key 打 `duplicate queue key` warn 作为 tripwire（不改行为，只留证据）——出现该
+日志说明有人又把外部 id 当队列身份用了。
 
 **新增可重复点击的卡片按钮时**：走非即时分支就会自动拿到铸造 key，不要再手工传卡片
 messageId。

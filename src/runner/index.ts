@@ -4,7 +4,6 @@
  * 本文件负责：
  * 1. re-export 所有类型（从 types.ts）
  * 2. re-export AgentRunner 实现（从各 agent 目录）
- * 3. re-export 配置路由函数 resolveAgentChoices / syncAgentChoices
  * （共享工具由消费方直接 import `common/*` 具体模块，不走 barrel）
  */
 
@@ -54,10 +53,3 @@ export type {
   GoalView,
   GoalStateEvent,
 } from './types.js';
-
-// =============================================================================
-// 配置路由函数
-// =============================================================================
-
-export { resolveAgentChoices } from './resolve-agent-choices.js';
-export { syncAgentChoices } from './sync-agent-choices.js';

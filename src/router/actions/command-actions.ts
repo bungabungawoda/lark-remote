@@ -27,11 +27,13 @@ import { buildLsCommand } from '../commands/ls.js';
 import type { LsTrailEntry } from '../commands/ls.js';
 import { buildWsCommand } from '../commands/ws.js';
 import { buildOrderCommand } from '../commands/order.js';
+import type { OrderEntry } from '../../order/index.js';
 import { buildResumeCommand, AUTO_RESUME_MAX_EVENTS } from '../commands/resume.js';
 import { resolveDirectory } from '../path-validation.js';
 import { pageInfo } from '../paging.js';
 import type { CommandRouter } from '../index.js';
 import { ACTIVE_PAGE_SIZE, applyNewSession } from './shared.js';
+import { deliverFileToFeishu } from './shared.js';
 
 export function cmdHelp(_host: CommandRouter): CommandResult {
   // 按钮组（可直接点击触发；按钮 label 只保留子命令，不含参数）
@@ -383,7 +385,7 @@ export function cmdCd(host: CommandRouter, args: string[], ctx: CommandContext):
   }
 
   // Switch cwd with auto-resume and user feedback (shared with /ws use and ls.switch)
-  return host.switchCwdAndNotify(ctx.userId, resolution.canonical, ctx);
+  return switchCwdAndNotify(host, ctx.userId, resolution.canonical, ctx);
 }
 
 /**
@@ -440,7 +442,7 @@ export async function cmdDownload(
     if (!cwd) return { text: '请先使用 /cd <path> 设置工作目录' };
     input = path.resolve(cwd, input);
   }
-  return host.deliverFileToFeishu(path.resolve(input), ctx);
+  return deliverFileToFeishu(host, path.resolve(input), ctx);
 }
 
 export function cmdWs(
@@ -459,7 +461,7 @@ export function cmdWs(
     touchWorkspace: (name) => host.workspaceStore.touch(name),
     listWorkspaces: () => host.workspaceStore.list(),
     getSortMode: (userId) => host.wsSortPreference.get(userId) ?? 'recent',
-    switchCwd: (userId, cwd, actionCtx) => host.switchCwdAndNotify(userId, cwd, actionCtx),
+    switchCwd: (userId, cwd, actionCtx) => switchCwdAndNotify(host, userId, cwd, actionCtx),
   });
 }
 
@@ -476,10 +478,10 @@ export function cmdResume(
       host.sessionStore.setSessionId(userId, agent, sessionId, cwd),
     defaultReader: () => host.sessionReader,
     readerFor: (agent) => host.sessionReaderRegistry.get(agent),
-    dshPresetMismatch: (reader, sessionId, cwd) => host.dshPresetMismatch(reader, sessionId, cwd),
-    readDisplay: (sessionId, cwd, opts) => host.readSessionDisplayState(sessionId, cwd, opts),
-    buildActions: (opts) => host.buildResumeActionButtons(opts),
-    canCompact: (agent, cwd) => host.canCompactSession(agent, cwd),
+    dshPresetMismatch: (reader, sessionId, cwd) => dshPresetMismatch(host, reader, sessionId, cwd),
+    readDisplay: (sessionId, cwd, opts) => readSessionDisplayState(host, sessionId, cwd, opts),
+    buildActions: (opts) => buildResumeActionButtons(host, opts),
+    canCompact: (agent, cwd) => canCompactSession(host, agent, cwd),
   });
 }
 
@@ -500,7 +502,7 @@ export function cmdActive(
   }
 
   // Build CardKit 2.0 card showing memory-based active runs
-  return host.buildActiveCardFromMemory(activeRuns, activeBashRuns, offset);
+  return buildActiveCardFromMemory(host, activeRuns, activeBashRuns, offset);
 }
 
 export function cmdOrder(
@@ -515,8 +517,17 @@ export function cmdOrder(
     save: (text) => host.orderStore.save(text),
     updateText: (id, text) => host.orderStore.updateText(id, text),
     setAlias: (id, alias) => host.orderStore.setAlias(id, alias),
-    resolveTarget: (target) => host.resolveOrderTarget(target),
+    resolveTarget: (target) => resolveOrderTarget(host, target),
   });
+}
+
+export function resolveOrderTarget(host: CommandRouter, target: string): OrderEntry | undefined {
+  const all = host.orderStore.get();
+  const byId = all.find((o) => o.id === target);
+  if (byId) return byId;
+  const n = Number(target);
+  if (Number.isInteger(n) && n >= 1 && n <= all.length) return all[n - 1];
+  return undefined;
 }
 
 export function readSessionDisplayState(
@@ -620,7 +631,7 @@ export function switchCwdAndNotify(
       newestSession.sessionId,
       canonical,
     );
-    return host.buildAutoResumeCard(canonical, newestSession, _ctx);
+    return buildAutoResumeCard(host, canonical, newestSession, _ctx);
   }
   return { text: `已切换到: ${canonical}` };
 }
@@ -632,13 +643,13 @@ export function buildAutoResumeCard(
   _ctx: CommandContext,
 ): CommandResult {
   const agentKind = host.config.defaultAgent;
-  return host.buildResumeLikeCard({
+  return buildResumeLikeCard(host, {
     cwd,
     sessionId: session.sessionId,
     agentKind,
     // 仅 auto-resume 入口带 Compact 按钮（runner 支持压缩时）；
     // config-switch 卡不带。
-    compact: host.canCompactSession(agentKind, cwd)
+    compact: canCompactSession(host, agentKind, cwd)
       ? { sessionId: session.sessionId, agentKind }
       : undefined,
     titleBase: '自动恢复会话',
@@ -686,14 +697,14 @@ export function buildResumeLikeCard(
     recap,
     displayTitle,
     activeRunRunId,
-  } = host.readSessionDisplayState(opts.sessionId, opts.cwd, {
+  } = readSessionDisplayState(host, opts.sessionId, opts.cwd, {
     // 默认 agent 时 readSessionDisplayState 内部仍走 host.sessionReader
     //（agentKind === defaultAgent 不触发 registry 查找），与旧的不传等价。
     agentKind: opts.agentKind,
     maxEvents: AUTO_RESUME_MAX_EVENTS,
   });
 
-  const actions = host.buildResumeActionButtons({
+  const actions = buildResumeActionButtons(host, {
     isActive,
     activeRunRunId,
     cwd: opts.cwd,
@@ -870,7 +881,8 @@ export function buildActiveCardFromMemory(
   let skipped = safeOffset;
 
   // Agent runs section（跨段 offset 分配：agent 段吃满 remaining 才轮到 bash 段）
-  ({ remaining, skipped } = host.appendActiveCardSection(
+  ({ remaining, skipped } = appendActiveCardSection(
+    host,
     elements,
     activeRuns,
     '## 🤖 Agent 任务',
@@ -892,7 +904,8 @@ export function buildActiveCardFromMemory(
   ));
 
   // Bash runs section（末段：不再使用返回的记账值）
-  host.appendActiveCardSection(
+  appendActiveCardSection(
+    host,
     elements,
     activeBashRuns,
     '## 💻 Bash 命令',

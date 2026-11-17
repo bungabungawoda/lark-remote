@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadConfig, getConfigValue, setConfigValue, AppConfigSchema } from './index.js';
+import {
+  loadConfig,
+  getConfigValue,
+  setConfigValue,
+  setConfigValues,
+  AppConfigSchema,
+} from './index.js';
 import type { AppConfig } from './index.js';
 import { AGENT_KINDS } from '../agent-kinds.js';
 
@@ -344,5 +350,51 @@ claude:
     expect(text).toContain('futureTuning:');
     expect(text).toContain('threshold: 7');
     expect(loadConfig(p).claude.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('把旧 agentChoices 迁移进 agents 槽位，并在写盘时删除该键', () => {
+    const p = writeConfig(`feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+
+defaultAgent: codex
+
+agentChoices:
+  codex:
+    model: legacy-model
+    modelProvider: legacy-provider
+`);
+    const config = loadConfig(p);
+
+    expect(config.agents.codex?.model).toBe('legacy-model');
+    expect(config.agents.codex?.modelProvider).toBe('legacy-provider');
+    expect('agentChoices' in config).toBe(false);
+
+    setConfigValue(p, config, 'idle.watchdogMinutes', '20');
+    expect(fs.readFileSync(p, 'utf-8')).not.toContain('agentChoices');
+  });
+
+  it('清空 agents 字段后重启不会被旧 agentChoices 复活', () => {
+    const p = writeConfig(`feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+
+defaultAgent: codebuddy
+
+agents:
+  codebuddy:
+    model: old-model
+
+agentChoices:
+  codebuddy:
+    model: old-model
+`);
+    const loaded = loadConfig(p);
+    const cleared = setConfigValues(p, loaded, { 'agents.codebuddy.model': undefined });
+    expect(cleared.agents.codebuddy?.model).toBeUndefined();
+
+    const restarted = loadConfig(p);
+    expect(restarted.agents.codebuddy?.model).toBeUndefined();
+    expect(fs.readFileSync(p, 'utf-8')).not.toContain('agentChoices');
   });
 });

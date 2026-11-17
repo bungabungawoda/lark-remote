@@ -1,14 +1,14 @@
 // /ls 列表、目录浏览与文件投递动作族。
 import path from 'node:path';
 import type { CommandContext, CommandResult } from '../../bridge/index.js';
-import { MAX_FILE_UPLOAD_SIZE } from '../../connector/file-limits.js';
 import { parseJumpOffset, PAGE_JUMP_INVALID_HINT } from '../../card/card-helpers.js';
-import { isDirectorySafe, resolveDirectory, statPath } from '../path-validation.js';
+import { isDirectorySafe, resolveDirectory } from '../path-validation.js';
 import { LS_PAGE_SIZE, recordTrail } from '../commands/ls.js';
 import type { LsTrailEntry } from '../commands/ls.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
-import { payloadOffset, searchQueryFrom } from './shared.js';
+import { deliverFileToFeishu, payloadOffset, searchQueryFrom } from './shared.js';
+import * as commandActions from './command-actions.js';
 
 /**
  * 解析卡片回传的 trail（外部输入）：只收字符串 path + 有限 offset。
@@ -72,12 +72,25 @@ export async function handleLsSwitch(
     return;
   }
   // Set cwd + auto-resume + user notification (shared with /cd and /ws use)
-  const notifyResult = host.switchCwdAndNotify(ctx.userId, resolution.canonical, ctx);
+  const notifyResult = commandActions.switchCwdAndNotify(
+    host,
+    ctx.userId,
+    resolution.canonical,
+    ctx,
+  );
   // Card channel: refresh ls card in-place (existing behavior preserved)。
   // value.root 是本次 /ls 浏览的起点（绝对路径，不受 cwd 变更影响），透传后
   // 「返回」仍回到用户最初 /ls 的那个目录；trail 保留各上级的原页码。
-  const card = host.cmdLs([resolution.canonical], ctx, 0, value.root, undefined, readTrail(value));
-  await host.refreshLsCard(card, ctx);
+  const card = commandActions.cmdLs(
+    host,
+    [resolution.canonical],
+    ctx,
+    0,
+    value.root,
+    undefined,
+    readTrail(value),
+  );
+  await refreshLsCard(host, card, ctx);
   // Message channel: send switch confirmation / auto-resume card to chat
   await host.bridge.sendResult(notifyResult, ctx);
 }
@@ -97,9 +110,9 @@ export async function handleLsRefresh(
   // the refresh. inspectPath closes the former existsSync→statSync race.
   const card =
     targetPath && isDirectorySafe(targetPath)
-      ? host.cmdLs([targetPath], ctx, offset, value.root, value.q, trail)
-      : host.cmdLs([], ctx, offset, value.root, value.q, trail);
-  await host.refreshLsCard(card, ctx);
+      ? commandActions.cmdLs(host, [targetPath], ctx, offset, value.root, value.q, trail)
+      : commandActions.cmdLs(host, [], ctx, offset, value.root, value.q, trail);
+  await refreshLsCard(host, card, ctx);
 }
 
 /**
@@ -132,7 +145,7 @@ export async function handleLsPage(
   if (!targetPath) {
     return { toast: { type: 'error', content: '卡片 payload 缺少 path' } };
   }
-  const paging = host.pagingOffset(value, LS_PAGE_SIZE);
+  const paging = pagingOffset(host, value, LS_PAGE_SIZE);
   if ('error' in paging) {
     return { toast: { type: 'error', content: paging.error } };
   }
@@ -140,7 +153,8 @@ export async function handleLsPage(
   if (!isDirectorySafe(resolvedTarget)) {
     return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
   }
-  const card = host.cmdLs(
+  const card = commandActions.cmdLs(
+    host,
     [resolvedTarget],
     ctx,
     paging.offset,
@@ -177,7 +191,15 @@ export async function handleLsFilter(
   if (!isDirectorySafe(resolvedTarget)) {
     return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
   }
-  const card = host.cmdLs([resolvedTarget], ctx, 0, value.root, q, readTrail(value));
+  const card = commandActions.cmdLs(
+    host,
+    [resolvedTarget],
+    ctx,
+    0,
+    value.root,
+    q,
+    readTrail(value),
+  );
   if (!card.card) {
     return { toast: { type: 'error', content: card.text ?? '读取目录失败' } };
   }
@@ -213,8 +235,16 @@ export async function handleLsBrowse(
     ? recordTrail(trail, path.dirname(resolvedTarget), Math.max(0, Math.trunc(from)))
     : trail;
   const offset = enteringDir ? 0 : payloadOffset(value);
-  const card = host.cmdLs([resolvedTarget], ctx, offset, value.root, undefined, nextTrail);
-  await host.refreshLsCard(card, ctx);
+  const card = commandActions.cmdLs(
+    host,
+    [resolvedTarget],
+    ctx,
+    offset,
+    value.root,
+    undefined,
+    nextTrail,
+  );
+  await refreshLsCard(host, card, ctx);
 }
 
 /**
@@ -229,40 +259,6 @@ export async function cardLsFile(
     await host.bridge.sendResult({ text: '卡片 payload 缺少 path' }, ctx);
     return;
   }
-  const result = await host.deliverFileToFeishu(path.resolve(target), ctx);
+  const result = await deliverFileToFeishu(host, path.resolve(target), ctx);
   if (result) await host.bridge.sendResult(result, ctx);
-}
-
-/**
- * 校验并发送本地文件到飞书（≤30MB）。成功返回 null（文件已发出），失败返回
- * 错误 CommandResult 由调用方展示。
- *
- * `/download` 与 `ls.file` 卡片按钮共用，避免两处重复 30MB/存在性校验。
- */
-export async function deliverFileToFeishu(
-  host: CommandRouter,
-  resolved: string,
-  ctx: CommandContext,
-): Promise<CommandResult | null> {
-  const resolution = statPath(resolved);
-  if (!resolution.ok) {
-    if (resolution.reason === 'missing') return { text: `文件不存在: ${resolved}` };
-    return { text: `无法读取: ${resolved}` };
-  }
-  const { stat } = resolution;
-  if (stat.isDirectory()) {
-    return { text: `这是一个目录，不能作为文件发送: ${resolved}\n用 /ls 查看目录内容` };
-  }
-  if (!stat.isFile()) {
-    return { text: `不是普通文件: ${resolved}` };
-  }
-  // 30MB，与飞书 im/v1/files API 对齐
-  if (stat.size > MAX_FILE_UPLOAD_SIZE) {
-    const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
-    return {
-      text: `文件太大 (${sizeMB}MB)，超过 ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB 限制不能发送`,
-    };
-  }
-  await host.bridge.sendFile(resolved, ctx);
-  return null;
 }

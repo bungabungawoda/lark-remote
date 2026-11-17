@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getLogger } from '../logger/index.js';
 import { spawnProcess } from '../platform/spawn.js';
+import { SyncCatalog } from './catalog-cache.js';
 
 /** Qoder CLI 输出中模型的宽松形态（结构未承诺，字段全部可选）。 */
 interface QoderModelEntryLike {
@@ -54,15 +55,8 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 /** 目录缓存 TTL。CLI 升级/模型增删在 5 分钟内可见。 */
 const CATALOG_CACHE_TTL_MS = 5 * 60_000;
 
-interface QoderCatalogCacheEntry {
-  binary: string;
-  snapshot: QoderCatalogSnapshot;
-  timestamp: number;
-}
-
-let catalogCache: QoderCatalogCacheEntry | null = null;
-/** 在途刷新（并发点火复用，避免同一时刻 spawn 多份 CLI）。 */
-let catalogRefreshInFlight: Promise<QoderConfigResult> | null = null;
+/** 上次成功快照（按 binary 隔离）：单个探测失败时按字段保留旧值。 */
+let lastGoodCatalog: { binary: string; snapshot: QoderCatalogSnapshot } | undefined;
 /**
  * 补充档位（`off`）的探测结果，按 binary 永久缓存：该探测实测 4–6s，
  * 每 5 分钟重跑一次没有收益。失败不写缓存，下次刷新重试。
@@ -71,8 +65,8 @@ const effortSupplementCache = new Map<string, string[]>();
 
 /** 清空缓存（仅供测试使用，生产代码无调用点）。 */
 export function _invalidateQoderConfigCacheForTest(): void {
-  catalogCache = null;
-  catalogRefreshInFlight = null;
+  qoderCatalog.invalidate();
+  lastGoodCatalog = undefined;
   effortSupplementCache.clear();
 }
 
@@ -313,61 +307,59 @@ async function fetchEffortOptions(binary: string): Promise<string[] | undefined>
 }
 
 /**
+ * 目录快照缓存：qoder 的探测全部是异步 spawn，冷启动同步路径只返回空清单
+ * （卡片回退文本输入），真实清单由 `refreshQoderConfig` 或启动预热填进来。
+ */
+const qoderCatalog = new SyncCatalog<QoderCatalogSnapshot, string>({
+  agent: 'qoder',
+  key: () => 'qodercn',
+  loadSync: () => ({ modelOptions: [], effortOptions: [] }),
+  loadAsync: async (binary) => {
+    const previous = lastGoodCatalog?.binary === binary ? lastGoodCatalog.snapshot : undefined;
+    const [modelOptions, effortOptions] = await Promise.all([
+      fetchModelOptions(binary),
+      fetchEffortOptions(binary),
+    ]);
+    if (modelOptions === undefined && effortOptions === undefined) {
+      throw new Error('qoder catalog probe failed');
+    }
+    const snapshot: QoderCatalogSnapshot = {
+      modelOptions: modelOptions ?? previous?.modelOptions ?? [],
+      effortOptions: effortOptions ?? previous?.effortOptions ?? [],
+    };
+    lastGoodCatalog = { binary, snapshot };
+    return snapshot;
+  },
+  fallback: () => ({ modelOptions: [], effortOptions: [] }),
+  isEmpty: (value) => value.modelOptions.length === 0 && value.effortOptions.length === 0,
+  ttlMs: CATALOG_CACHE_TTL_MS,
+});
+
+/**
  * 同步读缓存（config 卡 buildFields 用，绝不 spawn）。从未成功探测 → 空清单
- * （卡片回退文本输入）；缓存过期仍返回上次成功快照，刷新由同一帧点火的
- * `refreshQoderConfig` 在后台完成（stale-while-revalidate）。
+ * （卡片回退文本输入）；缓存过期仍返回上次成功快照，刷新在后台完成
+ * （stale-while-revalidate）。
  */
 export function loadQoderConfig(binary = 'qodercn', configDir?: string): QoderConfigResult {
-  const snapshot = catalogCache?.binary === binary ? catalogCache.snapshot : undefined;
+  const snapshot = qoderCatalog.read(binary, binary);
   return {
     currentModel: readCurrentModel(resolveQoderConfigDir(configDir)),
-    modelOptions: snapshot?.modelOptions ?? [],
-    effortOptions: snapshot?.effortOptions ?? [],
+    ...snapshot,
   };
 }
 
 /**
  * 异步刷新目录（buildFields 内联点火 / 启动预热调用）。TTL 内直接吃缓存；
  * 并发点火复用同一个 in-flight 刷新。探测失败保留上次成功快照（从未成功
- * 则空清单），并照常写时间戳（negative cache 让失败不再每个渲染都重试）。
+ * 则空清单），负缓存让失败不再每个渲染都重试。
  */
 export function refreshQoderConfig(
   binary = 'qodercn',
   configDir?: string,
 ): Promise<QoderConfigResult> {
-  const cached = catalogCache;
-  if (cached && cached.binary === binary && Date.now() - cached.timestamp < CATALOG_CACHE_TTL_MS) {
-    return Promise.resolve({
-      currentModel: readCurrentModel(resolveQoderConfigDir(configDir)),
-      ...cached.snapshot,
-    });
-  }
-  if (catalogRefreshInFlight) return catalogRefreshInFlight;
-
-  const previous = cached?.binary === binary ? cached.snapshot : undefined;
-  catalogRefreshInFlight = (async (): Promise<QoderConfigResult> => {
-    const [modelOptions, effortOptions] = await Promise.all([
-      fetchModelOptions(binary),
-      fetchEffortOptions(binary),
-    ]);
-    const snapshot: QoderCatalogSnapshot = {
-      modelOptions: modelOptions ?? previous?.modelOptions ?? [],
-      effortOptions: effortOptions ?? previous?.effortOptions ?? [],
-    };
-    catalogCache = { binary, snapshot, timestamp: Date.now() };
+  return qoderCatalog.refreshIfStale(binary, binary).then((snapshot) => {
     return { currentModel: readCurrentModel(resolveQoderConfigDir(configDir)), ...snapshot };
-  })()
-    .catch((err) => {
-      // fetch* 已内部兜底；这里只兜「Promise.all 之外」的意外，保持调用方零异常。
-      getLogger().warn(`[qoder-config] refresh failed: ${(err as Error).message}`);
-      const snapshot = previous ?? { modelOptions: [], effortOptions: [] };
-      catalogCache = { binary, snapshot, timestamp: Date.now() };
-      return { currentModel: readCurrentModel(resolveQoderConfigDir(configDir)), ...snapshot };
-    })
-    .finally(() => {
-      catalogRefreshInFlight = null;
-    });
-  return catalogRefreshInFlight;
+  });
 }
 
 /**

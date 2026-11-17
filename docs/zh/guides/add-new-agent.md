@@ -207,34 +207,9 @@ defaultAgent（用错 reader → 「未找到 session」）。不要在别处再
 鸭子探测，dsh 接入时漏了实现 → run 卡片整个不渲染按钮，没有报错、没有置灰、没有测试失败
 （2026-10-17）。
 
-### 步骤 10: 在配置函数添加分支
-
-在 `src/runner/resolve-agent-choices.ts` 的 `resolveAgentChoices` 函数的 switch 语句中添加：
-
-```typescript
-case '<agent>':
-  if (!resolvedAny.agents) resolvedAny.agents = {};
-  if (!resolvedAny.agents.<agent>) resolvedAny.agents.<agent> = {};
-  if (!resolvedAny.agents.<agent>.model && agentChoicesAny.model) {
-    resolvedAny.agents.<agent>.model = agentChoicesAny.model;
-  }
-  break;
-```
-
-在 `src/runner/sync-agent-choices.ts` 中同样添加：
-
-```typescript
-case '<agent>':
-  if (agentCfg.model) {
-    if (!updatedAny.agentChoices.<agent>) updatedAny.agentChoices.<agent> = {};
-    updatedAny.agentChoices.<agent>.model = agentCfg.model;
-  }
-  break;
-```
-
 ## 验证方法
 
-完成上述 10 步后：
+完成上述 9 步后：
 
 ```bash
 # 1. 类型检查：AGENT_KINDS 与各 Record<AgentKind, …> 表（如 COMPACT_CAPABILITY）

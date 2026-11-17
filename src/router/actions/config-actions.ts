@@ -1,5 +1,4 @@
 // /config 卡片动作、写盘传播与配置卡构建。
-import YAML from 'yaml';
 import type { CommandContext, CommandResult } from '../../bridge/index.js';
 import type { AppConfig } from '../../config/index.js';
 import {
@@ -8,11 +7,8 @@ import {
   mapAgentKey,
   getAgentConfig,
 } from '../../config/index.js';
-import { syncAgentChoices } from '../../runner/index.js';
-import { atomicWrite } from '../../persistence/atomic-write.js';
 import { getLogger } from '../../logger/index.js';
 import { sleep } from '../../common/sleep.js';
-import { enforceCardBudget } from '../../card/card-budget.js';
 import { agentDisplayName } from '../../card/card-shared.js';
 import { markdownDiv } from '../../card/card-helpers.js';
 import type { AgentKind } from '../../agent-kinds.js';
@@ -35,18 +31,17 @@ import {
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
 import {
-  MAX_CONFIG_CARDS,
   CONFIG_OPEN_PREFETCH_BUDGET_MS,
   CONFIG_SWITCH_NOTICE_BUDGET_MS,
   applyDefaultAgentSwitch,
   parkDshSessionBoundaryNotice,
   computeHasAgentConfigChange,
   computeHasApprovalConfigChange,
-  touchesAgentsSubtree,
 } from './shared.js';
 import type { ConfigSwitchResult } from './shared.js';
-import { scheduleConfigRender } from './config-render.js';
+import { budgetConfigCard, scheduleConfigRender } from './config-render.js';
 import { catalogSignature } from '../config/common/catalog-signature.js';
+import * as commandActions from './command-actions.js';
 
 export function ensurePendingConfig(host: CommandRouter): void {
   if (!host.pendingConfig) {
@@ -69,70 +64,6 @@ export function captureCatalogSignature(host: CommandRouter): string {
 }
 
 /**
- * 记住一张 config 卡片 messageId（有界：超限丢最早的一张）。
- * 无 messageId 的调用（测试/文本路径）不登记。
- */
-export function rememberConfigCard(host: CommandRouter, messageId: string | undefined): void {
-  if (!messageId) return;
-  host.configCardIds.delete(messageId);
-  host.configCardIds.add(messageId);
-  while (host.configCardIds.size > MAX_CONFIG_CARDS) {
-    const oldest = host.configCardIds.values().next().value as string;
-    host.configCardIds.delete(oldest);
-  }
-}
-
-/**
- * 配置卡的单一预算出口：inline 响应体与兄弟卡 PATCH 必须走同一套口径。
- *
- * 飞书对单卡「带 tag 节点 ≤ 200」（`MAX_CARD_COMPONENTS` 保守到 190）的限制在
- * send 与 patch 两条路径上都成立。只在一处裁剪会让另一条路径被 `11310` 拒绝，
- * 而 `patchCard` 失败会把该卡从 `configCardIds` 永久剔除——多卡同步静默失效，
- * 表面症状是「只有刚点的那张卡有新值」。
- */
-function budgetConfigCard(card: object, where: 'inline' | 'patch'): object {
-  const { card: safeCard, wasTruncated, reason, bytesAfter } = enforceCardBudget(card);
-  if (wasTruncated) {
-    getLogger().info(
-      `[router] config card budget applied (${where}): reason=${reason} bytesAfter=${bytesAfter}`,
-    );
-  }
-  return safeCard;
-}
-
-/**
- * 把当前草稿刷到所有已知 config 卡片上（仅后台渲染队列调用）。
- *
- * **不在这里登记卡片**：登记是调度时刻的事（scheduleConfigRender 同步完成，
- * `/c` 文本命令通过 skipRemember 排除）。之前把「是否登记」存进合并后的 pending
- * 再传给本函数，合并时字段一丢就会把用户文本消息 id 登记成 config 卡，之后每次
- * config.set 都会把那条聊天消息 PATCH 成配置卡。职责拆开后这类事故不可能再出现。
- *
- * `excludeMessageId` 是刚被响应体替换的那张，跳过避免同消息重复 PATCH 触发
- * 飞书 230429。注意：它同时意味着这张卡不会拿到本轮刷新后的目录（如 DSH 新增
- * provider），下一次点击会补齐——最终一致，不做二次 PATCH。`config.refresh`
- * 是例外：它不回 inline 卡片，让所有卡（含被点击那张）统一走这一条 PATCH 路径。
- */
-export async function refreshConfigCards(
-  host: CommandRouter,
-  excludeMessageId?: string,
-): Promise<number> {
-  const built = host.buildConfigCard().card;
-  // 与 inline 响应同一预算口径：超限卡的 PATCH 会被飞书整卡拒绝，
-  // 再被 patchCard 的失败分支把这个 messageId 永久剔除。
-  const card = built ? budgetConfigCard(built, 'patch') : undefined;
-  if (!card) return 0;
-  let patches = 0;
-  for (const messageId of [...host.configCardIds]) {
-    if (messageId === excludeMessageId) continue;
-    const ok = await host.bridge.patchCard(messageId, card);
-    if (ok) patches += 1;
-    else host.configCardIds.delete(messageId);
-  }
-  return patches;
-}
-
-/**
  * 把一次字段变更交给当前 agent 的 config builder（处理 provider→model 这类
  * 依赖关系），逐条写进草稿。`config.set`（下拉）与 `config.input`（输入框提交）
  * 共用同一套应用逻辑。
@@ -146,14 +77,14 @@ export async function applyConfigFieldChange(
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
   try {
-    host.ensurePendingConfig();
+    ensurePendingConfig(host);
 
     const defaultAgent = host.pendingConfig!.defaultAgent ?? 'claude';
     const configBuilder = getConfigBuilder(defaultAgent);
     const patches = configBuilder.handleFieldChange(key, newValue, host.pendingConfig!);
 
     for (const patch of patches) {
-      host.setNestedValue(host.pendingConfig!, patch.key, patch.value);
+      setNestedValue(host, host.pendingConfig!, patch.key, patch.value);
     }
 
     // 回调响应体直出这张卡（飞书原地替换 pre-click 卡，零额外网络写）。
@@ -186,7 +117,7 @@ export function enqueueConfigAction(
 ): Promise<CardActionResponse | void> {
   const run = async (): Promise<CardActionResponse | void> => {
     try {
-      return await host.dispatchConfigAction(value, ctx);
+      return await dispatchConfigAction(host, value, ctx);
     } catch (err) {
       getLogger().error('[router] config action error:', err);
     }
@@ -214,7 +145,7 @@ export async function dispatchConfigAction(
         await host.bridge.sendResult({ text: '缺少参数' }, ctx);
         return;
       }
-      return host.applyConfigFieldChange(key, newValue, ctx);
+      return applyConfigFieldChange(host, key, newValue, ctx);
     }
     case 'config.input': {
       // Handle input field: value.key is the field key.
@@ -231,10 +162,10 @@ export async function dispatchConfigAction(
         await host.bridge.sendResult({ text: '缺少输入值' }, ctx);
         return;
       }
-      return host.applyConfigFieldChange(key, newValue, ctx);
+      return applyConfigFieldChange(host, key, newValue, ctx);
     }
     case 'config.refresh': {
-      host.ensurePendingConfig();
+      ensurePendingConfig(host);
       // 不回 inline 卡片：被响应体原地替换的那张会被 refreshConfigCards 的
       // excludeMessageId 跳过，用户点了刷新、自己这张卡反而拿不到新目录。
       // 统一走后台 PATCH；显式点击总要补刷一次，给用户一个确定的回执。
@@ -255,7 +186,7 @@ export async function dispatchConfigAction(
         await host.bridge.sendResult({ text: '没有待保存的修改' }, ctx);
         return;
       }
-      const updates = host.diffConfig(host.config, host.pendingConfig);
+      const updates = diffConfig(host, host.config, host.pendingConfig);
       if (Object.keys(updates).length === 0) {
         host.pendingConfig = null;
         await host.bridge.sendResult({ text: '没有变更需要保存' }, ctx);
@@ -265,9 +196,9 @@ export async function dispatchConfigAction(
       try {
         const oldDefaultAgent = host.config.defaultAgent;
         host.config = setConfigValues(host.configPath, host.config, updates);
-        // 运行时传播（idleTimeout / clearRunners / syncAgentChoices /
-        // defaultAgent 切换的 session 处理）与文本直写路径共用，全是本地同步操作。
-        const switchResult = host.propagateConfigSave(oldDefaultAgent, updates, ctx);
+        // 运行时传播（idleTimeout / clearRunners / defaultAgent 切换的 session
+        // 处理）与文本直写路径共用，全是本地同步操作。
+        const switchResult = propagateConfigSave(host, oldDefaultAgent, updates, ctx);
         host.pendingConfig = null;
 
         // 目录预取 + 兄弟卡刷新进后台渲染队列（串行 + 合并）。切换通知仍在回调
@@ -312,7 +243,7 @@ async function sendSwitchNotice(
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
   const notice = switchResult.notice!;
-  const card = host.buildConfigSwitchCard(switchResult, ctx);
+  const card = buildConfigSwitchCard(host, switchResult, ctx);
   const send = host.bridge.sendResult(card, ctx);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const budgetHit = new Promise<typeof SWITCH_NOTICE_BUDGET_HIT>((resolve) => {
@@ -372,9 +303,7 @@ export function diffConfig(
  * 2. agent 配置或 defaultAgent 变更 → clearRunners（否则 runner 缓存继续用旧
  *    配置值，/status 与真实 run 自相矛盾）；
  * 3. defaultAgent 切换 → 旧 agent session 存 previousSessions、新 agent 恢复
- *    或清空（等效 /new）；
- * 4. 当前 agent 配置变更 → syncAgentChoices 并原子写盘（禁裸同步写盘，
- *    写一半崩溃会截断 config.yaml 导致 bridge 起不来）。
+ *    或清空（等效 /new）。
  *
  * @param updates 以 config 路径形式给出的变更 key（卡片路径来自 diffConfig；
  *   直写路径传 mapAgentKey(key)，保证 pi./codex./opencode./kimi. 命中 agents.*）。
@@ -457,15 +386,6 @@ export function propagateConfigSave(
     switchNotice,
   );
 
-  // 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
-  const currentAgent = host.config.defaultAgent;
-  if (touchesAgentsSubtree(changedKeys, currentAgent)) {
-    host.config = syncAgentChoices(host.config, currentAgent);
-    // agentChoices 同步写盘必须走原子写（tmp+rename），禁裸同步写盘
-    atomicWrite(host.configPath, YAML.stringify(host.config));
-    host.bridge.setConfig(host.config);
-  }
-
   // live approval settings: active workspace-lifetime runners
   // are not evicted by clearRunners() (would orphan the live subprocess).
   // Push the new approval-mode settings to those runners via the unified
@@ -525,14 +445,15 @@ export async function cmdConfig(
       // 避免静默清空导致用户在卡片上的修改无反馈丢失。差异必须在 setConfigValue
       // 之前计算——直写本身也会改变 config，不应计入「被丢弃的未保存修改」。
       const discarded = host.pendingConfig
-        ? Object.keys(host.diffConfig(host.config, host.pendingConfig)).length
+        ? Object.keys(diffConfig(host, host.config, host.pendingConfig)).length
         : 0;
       host.config = setConfigValue(host.configPath, host.config, key, value);
       // 直写路径与 config.save 卡片路径共用运行时传播（idleTimeout /
-      // clearRunners / syncAgentChoices / defaultAgent 切换）。key 经 mapAgentKey
-      // 归一化，pi./codex./opencode./kimi. 命中 agents.* 判定；claude. 与
+      // clearRunners / defaultAgent 切换）。key 经 mapAgentKey 归一化，
+      // pi./codex./opencode./kimi. 命中 agents.* 判定；claude. 与
       // defaultAgent 不再漏判。
-      const switchResult = host.propagateConfigSave(
+      const switchResult = propagateConfigSave(
+        host,
         oldDefaultAgent,
         { [mapAgentKey(key)]: value },
         ctx,
@@ -540,7 +461,7 @@ export async function cmdConfig(
       host.pendingConfig = null; // 命令式写盘后清空暂存，避免不一致
       // agent 切换时额外发送 Resume 卡片
       if (switchResult.notice) {
-        const switchCard = host.buildConfigSwitchCard(switchResult, ctx);
+        const switchCard = buildConfigSwitchCard(host, switchResult, ctx);
         // 文本路径返回 config card，Resume card 通过 bridge 异步发送
         void host.bridge.sendResult(switchCard, ctx);
       }
@@ -563,7 +484,7 @@ export async function cmdConfig(
   }
 
   // Default: show interactive config card - initialize pendingConfig if needed
-  host.ensurePendingConfig();
+  ensurePendingConfig(host);
   // 发送成功后由 router 登记（trackConfigCard），让 deferred 目录刷新能覆盖它。
   return { ...host.buildConfigCard(), trackConfigCard: true };
 }
@@ -733,7 +654,7 @@ export function buildConfigSwitchCard(
   // Has session → Resume card (shared body with buildAutoResumeCard)
   // SessionReaderRegistry.get() throws when the agent is not registered —
   // a null-reader fallback branch here is unreachable either way.
-  return host.buildResumeLikeCard({
+  return commandActions.buildResumeLikeCard(host, {
     cwd,
     sessionId,
     agentKind: newAgent,

@@ -468,58 +468,12 @@ const InboundMediaConfigSchema = z.object({
   maxFileSizeMb: z.number().int().min(1).default(DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB),
 });
 
-/** Agent-specific saved choices for quick switching. */
-const AgentChoicesSchema = z.object({
-  codex: z
-    .object({
-      model: z.string().optional(),
-      modelProvider: z.string().optional(),
-    })
-    .optional(),
-  pi: z
-    .object({
-      model: z.string().optional(),
-      provider: z.string().optional(),
-      thinking: z.string().optional(),
-    })
-    .optional(),
-  opencode: z
-    .object({
-      modelID: z.string().optional(),
-      providerID: z.string().optional(),
-    })
-    .optional(),
-  kimi: z
-    .object({
-      model: z.string().optional(),
-      thinkingEffort: z.string().optional(),
-    })
-    .optional(),
-  codebuddy: z
-    .object({
-      model: z.string().optional(),
-      permissionMode: z.string().optional(),
-      thinkingLevel: z.string().optional(),
-      sandbox: z.boolean().optional(),
-    })
-    .optional(),
-  qoder: z
-    .object({
-      model: z.string().optional(),
-      reasoningEffort: z.string().optional(),
-      permissionMode: z.string().optional(),
-    })
-    .optional(),
-});
-
 export const AppConfigSchema = z.object({
   feishu: FeishuConfigSchema,
   /** Claude config (top-level; other agents live under `agents`). */
   claude: ClaudeConfigSchema.default(ClaudeConfigSchema.parse({})),
   /** Per-agent configuration for non-claude agents. 首次启动默认含 codex（app-server / workspace-write / on-request）。 */
   agents: AgentsConfigSchema.default(DEFAULT_AGENTS_CONFIG),
-  /** Agent-specific saved choices for quick switching. */
-  agentChoices: AgentChoicesSchema.optional(),
   idle: IdleConfigSchema.default(IdleConfigSchema.parse({})),
   logging: LoggingConfigSchema.default(LoggingConfigSchema.parse({})),
   /** 入站媒体（图片/文件）落盘配置。 */
@@ -553,6 +507,74 @@ logging:
 defaultAgent: claude
 `;
 
+/**
+ * 旧配置迁移：agentChoices 曾是 agents.<agent> 的第二份拷贝，现已删除。
+ * 按旧 resolveAgentChoices 的优先级把缺失字段补进 agents 槽位，再丢弃整段
+ * agentChoices —— 保留它会让用户清空的字段在重启后被旧值填回。
+ */
+const LEGACY_AGENT_CHOICE_FIELDS: Record<string, readonly (readonly [string, string])[]> = {
+  codex: [
+    ['model', 'model'],
+    ['modelProvider', 'modelProvider'],
+  ],
+  pi: [
+    ['model', 'model'],
+    ['provider', 'provider'],
+    ['thinking', 'thinking'],
+  ],
+  opencode: [
+    ['modelID', 'modelID'],
+    ['providerID', 'providerID'],
+  ],
+  kimi: [
+    ['model', 'model'],
+    ['thinkingEffort', 'thinkingEffort'],
+  ],
+  codebuddy: [
+    ['model', 'model'],
+    ['permissionMode', 'permissionMode'],
+    ['thinkingLevel', 'thinkingLevel'],
+    ['sandbox', 'sandbox'],
+  ],
+  qoder: [
+    ['model', 'model'],
+    ['reasoningEffort', 'reasoningEffort'],
+    ['permissionMode', 'permissionMode'],
+  ],
+};
+
+function migrateLegacyAgentChoices(parsed: unknown): void {
+  if (!parsed || typeof parsed !== 'object') return;
+  const root = parsed as Record<string, unknown>;
+  const choices = root.agentChoices;
+  delete root.agentChoices;
+  if (!choices || typeof choices !== 'object') return;
+
+  let agents = root.agents;
+  if (!agents || typeof agents !== 'object') {
+    agents = {};
+    root.agents = agents;
+  }
+  const agentsRecord = agents as Record<string, unknown>;
+  const choicesRecord = choices as Record<string, unknown>;
+
+  for (const [agent, fields] of Object.entries(LEGACY_AGENT_CHOICE_FIELDS)) {
+    const chosen = choicesRecord[agent];
+    if (!chosen || typeof chosen !== 'object') continue;
+    let slot = agentsRecord[agent];
+    if (!slot || typeof slot !== 'object') {
+      slot = {};
+      agentsRecord[agent] = slot;
+    }
+    const target = slot as Record<string, unknown>;
+    const source = chosen as Record<string, unknown>;
+    for (const [configKey, choicesKey] of fields) {
+      const value = source[choicesKey];
+      if (target[configKey] === undefined && value) target[configKey] = value;
+    }
+  }
+}
+
 export function loadConfig(configPath: string): AppConfig {
   if (!fs.existsSync(configPath)) {
     const dir = path.dirname(configPath);
@@ -577,6 +599,7 @@ export function loadConfig(configPath: string): AppConfig {
     process.exit(1);
   }
 
+  migrateLegacyAgentChoices(parsed);
   const result = AppConfigSchema.safeParse(parsed);
   if (!result.success) {
     const errors = result.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n');
@@ -753,6 +776,8 @@ function renderConfigPatch(
     );
     return YAML.stringify(validated);
   }
+  // 已删除的旧字段：下一次写盘顺手清掉，避免 config.yaml 永远留一段失效配置。
+  if (YAML.isMap(doc.contents)) doc.deleteIn(['agentChoices']);
   for (const [key, value] of Object.entries(updates)) {
     const parts = mapAgentKey(key).split('.');
     if (value === undefined) {

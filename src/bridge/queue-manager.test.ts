@@ -204,16 +204,14 @@ describe('QueueManager', () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  // index-consistency regression anchor. A `Map<messageId, QueuedTask>`
-  // index must stay in sync with the ordered `queuedTasks` array across every
-  // mutation path (enqueue / task-start removal / cancel / immediate / edit).
-  // Any stale index entry would make `getQueuedTask`, `removeFromQueue`,
-  // `updateQueuedTaskMessage`, and `getQueuedTasks` disagree — observable as
-  // a removed task still being found, or edit/cancel acting on a ghost entry.
-  // This anchor exercises a mixed sequence and asserts the four public lookup
-  // methods agree at every step. GREEN today (locks behavior); the green
-  // refactor that introduces the index must keep it GREEN.
-  it('test_anchor_queue_index_consistency_across_mixed_mutations', async () => {
+  // lookup-consistency regression anchor. `queuedTasks` is the single source
+  // of truth: enqueue / task-start removal / cancel / immediate / edit must
+  // keep `getQueuedTask`, `removeFromQueue`, `updateQueuedTaskMessage`, and
+  // `getQueuedTasks` in agreement. A second index can drift and make a removed
+  // task still visible, or edit/cancel act on a ghost entry. This anchor
+  // exercises a mixed sequence and asserts the four public lookup methods
+  // agree at every step.
+  it('test_anchor_queue_lookup_consistency_across_mixed_mutations', async () => {
     const { qm } = makeQueueManager(() => true);
 
     // Task 1 — runs immediately (held), tasks 2-4 queue behind.
@@ -611,13 +609,11 @@ describe('QueueManager', () => {
  * 铸造点在入口层（`CommandRouter.mintQueueTaskKey`，index.ts 的非即时卡片动作
  * 分支 + order.exec 文本钩子）。飞书卡片的 messageId 是展示层 id，同一张卡可被
  * 连点 N 次（1:N），绝不能当 queue key：queuedTasks 的定位（findIndex 命中最早
- * 那条兄弟）、taskIndex 的取消判据（第一条开始执行时 indexRemove 删掉共享 key，
- * 其余兄弟被判「已撤销」）、queueCardMessages 的卡片更新（Map 覆盖，只留最后
- * 一张卡）三处会同时串位。
+ * 那条兄弟）、显式撤销（removeFromQueue 同样命中最早那条）、queueCardMessages
+ * 的卡片更新（Map 覆盖，只留最后一张卡）三处会同时串位。
  *
- * 连点同一张卡的 🗜 Compact 三次 → 三张排队卡都显示
- * 「位置: 第 1 位 / 前面还有 0 条」，其中两张永久停在「⏳ 消息排队中」，
- * 实际只压缩了一次。
+ * 连点同一张卡的 🗜 Compact 三次 → 三张排队卡都显示「位置: 第 1 位 /
+ * 前面还有 0 条」，撤销/执行态落到错误条目。
  */
 describe('QueueManager 队列身份（连点同一张卡）', () => {
   it('test_anchor_card_action_queue_key_unique_per_enqueue_runs_all_and_numbers_positions', async () => {
@@ -702,8 +698,8 @@ describe('QueueManager 队列身份（连点同一张卡）', () => {
   });
 
   it('同 key 入队触发 tripwire warn（身份不变量被破坏时必须留证据）', async () => {
-    // 验证什么：queue key 撞车时日志必须留痕 —— 数组（追加）与 taskIndex（覆盖）
-    // 会漂移，位置/撤销/卡片更新会串到别的条目上，静默下去就是
+    // 验证什么：queue key 撞车时日志必须留痕 —— 位置/撤销/卡片更新会串到
+    // 别的条目上，静默下去就是
     // 「卡片永久等待中」无法从日志复现。
     const { qm } = makeQueueManager();
     mockLogger.warn.mockClear();

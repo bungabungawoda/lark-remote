@@ -165,17 +165,6 @@ export class QueueManager {
   /** Per-workspace queued tasks for queue display cards. Key = cwd, value = task list. */
   private queuedTasks = new Map<string, QueuedTask[]>();
   /**
-   * per-workspace `messageId → QueuedTask` index mirroring `queuedTasks`.
-   * O(1) lookup for the task-start removal path (replacing the old double
-   * `find`+`findIndex` O(N) scan) and for `getQueuedTask`/`removeFromQueue`/
-   * `updateQueuedTaskMessage`. The ordered array remains the source of truth
-   * (position display depends on order); the index must be kept in sync on
-   * every mutation (push / splice / shift) via the `indexAdd`/`indexRemove`
-   * helpers. Same messageId is never enqueued twice in one cwd
-   * (Feishu dedup + internal-key dedup), so no overwrite concern.
-   */
-  private taskIndex = new Map<string, Map<string, QueuedTask>>();
-  /**
    * Map from user messageId to the queue card's Feishu send promise. Storing
    * the promise (not the resolved id) closes the race where the card send is
    * still in flight when the task begins: the begin path awaits the stored
@@ -261,26 +250,6 @@ export class QueueManager {
     this.isWorkspaceRunning = isWorkspaceRunning;
     this.sendCard = sendCard;
     this.updateCard = updateCard;
-  }
-
-  /** register a queued task in the per-workspace `messageId → task` index. */
-  private indexAdd(cwd: string, task: QueuedTask): void {
-    let idx = this.taskIndex.get(cwd);
-    if (!idx) {
-      idx = new Map();
-      this.taskIndex.set(cwd, idx);
-    }
-    idx.set(task.messageId, task);
-  }
-
-  /** drop a task from the per-workspace index by messageId. */
-  private indexRemove(cwd: string, messageId: string): void {
-    this.taskIndex.get(cwd)?.delete(messageId);
-  }
-
-  /** O(1) lookup of a queued task by messageId via the index. */
-  private indexGet(cwd: string, messageId: string): QueuedTask | undefined {
-    return this.taskIndex.get(cwd)?.get(messageId);
   }
 
   /**
@@ -380,17 +349,15 @@ export class QueueManager {
       this.queuedTasks.set(cwd, taskList);
     }
     // 身份不变量 tripwire：同一 cwd 内 queue key 必须唯一（一次入队动作一个
-    // key，铸造点 router.mintQueueTaskKey）。撞 key 时数组（追加）与 taskIndex
-    // （覆盖）必然漂移，位置显示/撤销/立即执行/卡片更新会串到别的条目上。
-    // 这里不改行为，只留证据。
-    if (this.indexGet(cwd, queuedTask.messageId)) {
+    // key，铸造点 router.mintQueueTaskKey）。撞 key 时位置显示/撤销/立即执行/
+    // 卡片更新会串到别的条目上。这里不改行为，只留证据。
+    if (taskList.some((t) => t.messageId === queuedTask.messageId)) {
       getLogger().warn(
         `[queue-manager] duplicate queue key cwd=${cwd} messageId=${queuedTask.messageId} — ` +
           'queue identity must be minted per enqueue action (see router.mintQueueTaskKey)',
       );
     }
     taskList.push(queuedTask);
-    this.indexAdd(cwd, queuedTask);
 
     // Increment executing count SYNCHRONOUSLY so subsequent enqueues see it
     this.pendingOrExecutingCount.set(cwd, currentExecutingCount + 1);
@@ -461,25 +428,17 @@ export class QueueManager {
     let livePreview = taskMeta?.messagePreview ?? '';
     // Check if this task was cancelled before executing
     if (messageId) {
-      // O(1) index lookup replaces the old `find` + `findIndex`
-      // double O(N) scan. The ordered array still drives removal (splice
-      // preserves queue order for position display); the index stays in
-      // sync via indexRemove.
-      const queued = this.indexGet(cwd, messageId);
-      if (!queued) {
+      const taskList = this.queuedTasks.get(cwd);
+      const idx = taskList?.findIndex((t) => t.messageId === messageId) ?? -1;
+      if (!taskList || idx < 0) {
         getLogger().debug(
           `[queue-manager] task skipped (cancelled) cwd=${cwd} messageId=${messageId}`,
         );
         return undefined;
       }
+      const queued = taskList[idx];
       livePreview = queued.messagePreview;
-      // Remove this task's metadata by messageId
-      const taskList = this.queuedTasks.get(cwd);
-      const idx = taskList?.findIndex((t) => t.messageId === messageId) ?? -1;
-      if (taskList && idx >= 0) {
-        taskList.splice(idx, 1);
-      }
-      this.indexRemove(cwd, messageId);
+      taskList.splice(idx, 1);
       // Cancellation check passed and the task has been removed: it is
       // about to run, so record it as began for queue.immediate feedback.
       // Bounded: ids are only consulted for the current immediate target,
@@ -784,7 +743,7 @@ export class QueueManager {
         tag: 'div',
         text: { tag: 'lark_md', content: `📝 \`${messagePreview}\`` },
       });
-      const task = this.indexGet(cwd, messageId);
+      const task = this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
       if (task?.editable !== false) {
         // Edit button: a pending (queued) task is editable by default. The
         // executing/cancelled states render via dedicated card builders that
@@ -876,7 +835,7 @@ export class QueueManager {
       // flight while the user edited. The begin path (started=true) already
       // passes the live preview captured at begin, so the fallback is only
       // exercised when the task is no longer queued.
-      const liveTask = this.indexGet(cwd, messageId);
+      const liveTask = this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
       const stillQueued = liveTask !== undefined;
       if (!stillQueued && !started) {
         getLogger().debug(
@@ -919,13 +878,9 @@ export class QueueManager {
     const taskList = this.queuedTasks.get(cwd);
     if (!taskList) return false;
 
-    // index is the O(1) presence check; array splice keeps order.
-    if (!this.indexGet(cwd, messageId)) return false;
     const index = taskList.findIndex((t) => t.messageId === messageId);
-    if (index >= 0) {
-      taskList.splice(index, 1);
-    }
-    this.indexRemove(cwd, messageId);
+    if (index < 0) return false;
+    taskList.splice(index, 1);
     // queueCardMessages mapping 仍不在这里删：卡片更新由 Bridge.removeFromQueue
     // 统一触发（单一收口），updateQueueCardToCancelled 成功/失败后都会清掉映射。
     // 直接调 QueueManager.removeFromQueue 的测试/内部用途不会自动更新卡片。
@@ -988,8 +943,7 @@ export class QueueManager {
 
   /** Get task metadata from queue. */
   getQueuedTask(cwd: string, messageId: string): QueuedTask | undefined {
-    // O(1) index lookup instead of array `find`.
-    return this.indexGet(cwd, messageId);
+    return this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
   }
 
   /**
@@ -1009,8 +963,7 @@ export class QueueManager {
 
   /** Update the messagePreview for a queued task. Returns true if found and updated. */
   updateQueuedTaskMessage(cwd: string, messageId: string, newMessage: string): boolean {
-    // O(1) index lookup instead of array `find`.
-    const task = this.indexGet(cwd, messageId);
+    const task = this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
     if (!task) return false;
 
     task.messagePreview = newMessage;

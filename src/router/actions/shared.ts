@@ -1,6 +1,8 @@
 // 命令路由的共享原语：模块级纯函数、卡片回调类型与常量。
 // index.ts 与 actions/* 同层消费，避免 actions 运行时反向 import index.ts 成环。
 import { clampInt } from '../../common/clamp.js';
+import type { CommandContext, CommandResult } from '../../bridge/index.js';
+import { MAX_FILE_UPLOAD_SIZE } from '../../connector/file-limits.js';
 import {
   parseJumpOffset,
   PAGE_JUMP_INVALID_HINT,
@@ -10,6 +12,7 @@ import { AGENT_KINDS } from '../../agent-kinds.js';
 import type { AgentKind } from '../../agent-kinds.js';
 import type { SessionStore } from '../../session/index.js';
 import { agentDisplayName } from '../../card/card-shared.js';
+import { statPath } from '../path-validation.js';
 
 /** Payload carried by a card button click. */
 export interface CardActionPayload {
@@ -216,19 +219,53 @@ export const CONFIG_EXIT_FLUSH_BUDGET_MS = 800;
 
 export const APPROVAL_AGENT_KINDS: string[] = ['codex', 'kimi', 'opencode'];
 
-export function touchesAgentsSubtree(keys: readonly string[], kind: string): boolean {
-  return keys.some((k) => k === `agents.${kind}` || k.startsWith(`agents.${kind}.`));
+/**
+ * 校验并发送本地文件到飞书（≤30MB）。成功返回 null（文件已发出），失败返回
+ * 错误 CommandResult 由调用方展示。
+ *
+ * `/download` 与 `ls.file` 卡片按钮共用，避免两处重复 30MB/存在性校验。
+ */
+export async function deliverFileToFeishu(
+  host: { bridge: { sendFile(path: string, ctx: CommandContext): Promise<unknown> } },
+  resolved: string,
+  ctx: CommandContext,
+): Promise<CommandResult | null> {
+  const resolution = statPath(resolved);
+  if (!resolution.ok) {
+    if (resolution.reason === 'missing') return { text: `文件不存在: ${resolved}` };
+    return { text: `无法读取: ${resolved}` };
+  }
+  const { stat } = resolution;
+  if (stat.isDirectory()) {
+    return { text: `这是一个目录，不能作为文件发送: ${resolved}\n用 /ls 查看目录内容` };
+  }
+  if (!stat.isFile()) {
+    return { text: `不是普通文件: ${resolved}` };
+  }
+  // 30MB，与飞书 im/v1/files API 对齐
+  if (stat.size > MAX_FILE_UPLOAD_SIZE) {
+    const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+    return {
+      text: `文件太大 (${sizeMB}MB)，超过 ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB 限制不能发送`,
+    };
+  }
+  await host.bridge.sendFile(resolved, ctx);
+  return null;
 }
 
 /**
  * 本次改动是否触及某个 agent 的配置——两种键形态都要认：现行 `agents.<kind>[.*]`
  * 与历史的顶层 `<kind>[.*]`（claude 至今是顶层键）。判定曾抄在三处（agent 变更检测 /
- * agentChoices 同步 / approval 热推），每加一个 agent 都得记得改三遍，与
- * AGENT_KINDS 名单漂移是同一种事故，这里收成一处。
+ * approval 热推），每加一个 agent 都得记得改两遍，与 AGENT_KINDS 名单漂移是
+ * 同一种事故，这里收成一处。
  */
 export function touchesAgentConfig(keys: readonly string[], kind: string): boolean {
-  return (
-    touchesAgentsSubtree(keys, kind) || keys.some((k) => k === kind || k.startsWith(`${kind}.`))
+  return keys.some(
+    (k) =>
+      k === `agents.${kind}` ||
+      k.startsWith(`agents.${kind}.`) ||
+      k === kind ||
+      k.startsWith(`${kind}.`),
   );
 }
 

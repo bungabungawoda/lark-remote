@@ -9,7 +9,6 @@ import {
   type AppConfig,
 } from './config/index.js';
 import type { AgentSessionContentEvent, AgentSessionUsage } from './session-contract.js';
-import { resolveAgentChoices } from './runner/index.js';
 import { ensureConfig } from './config/wizard.js';
 import {
   parseCliArgs,
@@ -193,9 +192,7 @@ async function initializeCliAndConfig(cliArgs: ReturnType<typeof parseCliArgs>):
 
   const configPath = path.join(configDir, 'config.yaml');
   await ensureConfig(configPath);
-  let config = loadConfig(configPath);
-  // Apply agentChoices: restore last used config for current agent
-  config = resolveAgentChoices(config);
+  const config = loadConfig(configPath);
 
   const logDir = path.join(configDir, 'logs');
   initLogger({

@@ -4641,10 +4641,10 @@ describe('CommandRouter /clone on help card', () => {
  *
  * 入口层（index.ts 的非即时卡片动作分支 + order.exec 文本钩子）靠它给每次
  * 入队动作发一个 1:1 的 key；飞书卡片 messageId 是展示层 id（一张卡可点 N 次，
- * 1:N），只能当回复目标，不能当队列 key —— 复用会让 queuedTasks 定位、taskIndex
- * 取消判据、queueCardMessages 卡片更新三处同时串位（连点
- * Compact 三次 → 三张排队卡都显示「第 1 位」、两张永久停在「等待中」，只压缩
- * 一次）。铸造点必须保证「连续两次同步调用也拿不到同一个 key」。
+ * 1:N），只能当回复目标，不能当队列 key —— 复用会让 queuedTasks 定位、撤销、
+ * queueCardMessages 卡片更新三处同时串位（连点 Compact 三次 → 三张排队卡都
+ * 显示「第 1 位」，撤销/执行态落到错误条目）。铸造点必须保证「连续两次同步
+ * 调用也拿不到同一个 key」。
  */
 describe('队列身份 key 铸造', () => {
   it('test_anchor_mint_queue_task_key_is_unique_per_call', () => {
