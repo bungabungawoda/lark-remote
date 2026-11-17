@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-11-18
+
+### 修复
+
+- **codex 长会话恢复失败（`transport closed`）**：`thread/resume` 改为排除全量历史（`excludeTurns: true`）。长会话的 full-history hydration 会把所有 turn 塞进单行 JSON，超过 transport 单行上限后连接被断开，恢复与 `/compact` 都会失败；桥不消费 `thread.turns`，需要历史时走分页接口
+- **会话历史卡不再伪造完成态**：`/resume` 与自动恢复的会话卡不再打印「✅ 已完成 / 结果 - success」；末轮被中断且没有模型调用时标注「末轮未产生模型调用」，累计与上下文照常展示。run 卡行为不变，完成通知卡按真实终态保留结果行
+- **排队条目按自身 key 开始与撤销**：队列开始路径改为按任务自身 key 定位并移除；撞 key 时不会再误删同 cwd 的兄弟条目。队列数组成为唯一事实源，去掉并存的索引
+
+### 变更
+
+- **内部清理与单一事实源**：移除无消费者的 config 埋点、空闲转发层与 agent choices 转发层，Router 按 action 分发拆分；无用户可见行为变化
+- **新增 agent 接入文档**：步骤由 10 步收敛为 9 步，删除已移除的 choices 分支步骤
+
+### 测试
+
+- 新增卡片预算、run 渲染与文本截断的属性测试，覆盖边界与不变量；修复 codebuddy 目录与配置用例在并发及 shuffle 下的偶发失败；配置卡预算锚点用例迁移到 `config-card-budget`
+
+### 文档
+
+- 中英 `design.md` 增加 `thread/resume` 全量历史约束与守卫说明；`token-usage-scope.md` 补充会话卡展示契约（历史快照 vs run 完成报告）
+
 ## [0.7.3] - 2026-11-14
 
 ### 性能
