@@ -218,3 +218,81 @@ describe('buildSessionHistoryCard 头部标题段', () => {
     expect(text).toContain('首条用户消息');
   });
 });
+
+/**
+ * 会话历史卡的用量区块是"历史快照"，不是一次 run 的完成报告。
+ *
+ * 缺失后果：末轮被用户中断且没有产生任何模型调用时，卡片既写「✅ 已完成」
+ * 又写「结果 - success」，把一次 hung+abort 报成成功；四项 token 又全是 0，
+ * 用户无法区分"真实消耗为 0"和"数据没读出来"。
+ */
+describe('buildSessionHistoryCard 会话卡用量区块', () => {
+  function usageText(card: object): string {
+    const body = (card as { body: { elements: Array<{ text?: { content?: string } }> } }).body;
+    return body.elements.map((el) => el.text?.content ?? '').join('\n');
+  }
+
+  const zeroFlowUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+    contextLength: 118000,
+    contextLimit: 900000,
+    cumulativeInputTokens: 150000,
+    cumulativeOutputTokens: 16000,
+    cumulativeCacheReadTokens: 4500000,
+    cumulativeTotalTokens: 4700000,
+  };
+
+  const baseState = { sessionId: 'session-usage', cwd: '/repo', events: [] };
+  const baseOpts = {
+    agentKind: 'codex',
+    headerText: '📂 `/repo`\n会话: **session-usage**',
+    title: '🔁 恢复会话',
+  };
+
+  it('不伪造「已完成」与结果行', () => {
+    const text = usageText(
+      buildSessionHistoryCard({ ...baseState, usage: zeroFlowUsage }, baseOpts),
+    );
+
+    expect(text).not.toContain('✅ 已完成');
+    expect(text).not.toContain('结果 - success');
+    expect(text).not.toContain('结果 -');
+    // 累计与上下文仍照常展示——它们来自历史，与末轮流量是两套 scope。
+    expect(text).toContain('Context - 118K');
+    expect(text).toContain('累计 150K');
+  });
+
+  it('末轮零流量但有历史累计时给出可读提示', () => {
+    const text = usageText(
+      buildSessionHistoryCard({ ...baseState, usage: zeroFlowUsage }, baseOpts),
+    );
+
+    expect(text).toContain('末轮未产生模型调用');
+    expect(text).toContain('Input token - 0');
+    expect(text).toContain('累计 4.5M');
+  });
+
+  it('末轮有流量时不显示零流量提示', () => {
+    const text = usageText(
+      buildSessionHistoryCard(
+        {
+          ...baseState,
+          usage: {
+            inputTokens: 500,
+            outputTokens: 100,
+            cacheReadTokens: 200,
+            totalTokens: 800,
+            contextLength: 800,
+          },
+        },
+        baseOpts,
+      ),
+    );
+
+    expect(text).not.toContain('末轮未产生模型调用');
+    expect(text).toContain('Input token - 500');
+  });
+});

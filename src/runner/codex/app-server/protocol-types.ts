@@ -121,6 +121,13 @@ export interface ThreadResumeParams {
   sandbox?: SandboxMode;
   /** Configuration overrides for the resumed thread (codex v2 wire field). */
   config?: Record<string, unknown> | null;
+  /**
+   * Skip full-history hydration. Without this, a paginated thread returns every
+   * turn as one JSON line; long sessions exceed the transport's 10MB line
+   * limit and the connection is dropped as `parse_error`. The bridge never
+   * consumes `thread.turns` — history is reachable via `thread/turns/list`.
+   */
+  excludeTurns?: boolean;
 }
 
 /** `thread/settings/update` params (real v2 protocol). */

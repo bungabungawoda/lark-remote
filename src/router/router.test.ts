@@ -2200,7 +2200,8 @@ describe('CommandRouter', () => {
     // 只依赖内存 activeRun
     // result 事件后状态直接是 done，显示"恢复会话"而不是"后台任务中"
     expect(cardContent).toContain('🔁 恢复会话');
-    expect(cardContent).toContain('已完成');
+    // 会话卡是历史快照，不是一次 run 的完成报告：不写「已完成」。
+    expect(cardContent).not.toContain('已完成');
     // 不会显示停止按钮（没有内存中的 activeRun）
     expect(cardContent).not.toContain('⏹ 终止');
     // Should show context length in new format

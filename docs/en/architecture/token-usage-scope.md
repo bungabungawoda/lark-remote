@@ -47,6 +47,16 @@ session reader ────┘        (flow: live first; context/compact: jsonl 
 - **jsonl fallback**: all 8 `AgentSessionReader.readSessionContent` implementations produce `AgentSessionUsage` (roster single-sourced from `AGENT_KINDS` in `src/agent-kinds.ts`).
 - **Readers have a second consumer**: `/resume`, the auto-resume card, and the completion notification card display `readSessionContent` usage directly. Reader scope correctness cannot rely on "the done card has live data".
 
+### Session-card display contract
+
+`/resume` and the auto-resume card show a session-history snapshot. They reuse `formatUsageStats` in session-card mode, which differs from the run card in three ways:
+
+1. **flow is the last turn, and 0 is a real value.** The four flow figures are the sum of samples in the last turn. If that turn was interrupted before its first model request returned, the rollout has no samples and all four figures are 0. Cumulative fields still cover the whole session, so "Input/Output/Cached/Total all 0, cumulative non-zero" is possible. This is not data loss — `formatUsageStats` appends the note `末轮未产生模型调用` when flow is all zero but cumulative is non-zero.
+2. **No completion/result header line.** A session card is not a run completion report: it does not print `✅ 已完成`, and callers do not pass `usageResult`. The completion notification card is the exception — it maps its title from the run terminal state and prints `结果 - completed` in the footer only when the terminal state is done.
+3. **context/cumulative still render.** They are a different scope from last-turn flow and are not omitted just because flow is 0.
+
+Run cards do not use this mode; their header and result lines are unchanged.
+
 ---
 
 ## 3. Regression History (2026-07 → 2026-11)

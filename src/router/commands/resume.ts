@@ -201,7 +201,6 @@ function resumeSessionCard(
         agentKind,
         headerText: `📂 \`${cwd}\`\n会话: **${sessionIdArg}**`,
         title: `${display.isActive || display.hostRunning ? '⏳ 恢复会话（完成中）' : '🔁 恢复会话'} · ${agentDisplayName(agentKind)}`,
-        usageResult: 'success',
         emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
         stillRunning: display.hostRunning,
         actions,

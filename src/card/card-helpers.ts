@@ -436,9 +436,10 @@ export function buildSessionHistoryCard(
   }
 
   if (usage) {
-    const usageStr = opts.usageResult
-      ? formatUsageStats(usage, { showResult: true, result: opts.usageResult })
-      : formatUsageStats(usage);
+    const usageStr = formatUsageStats(usage, {
+      sessionCard: true,
+      ...(opts.usageResult ? { showResult: true, result: opts.usageResult } : {}),
+    });
     elements.push(markdownDiv(usageStr));
   }
 

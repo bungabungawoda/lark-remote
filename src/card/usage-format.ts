@@ -54,6 +54,14 @@ interface UsageDisplayOptions {
    * 本轮 turn 结束不等于任务结束。
    */
   completedLabel?: string;
+  /**
+   * 会话历史卡模式：用量是"历史快照"而非一次 run 的完成报告。
+   * - 不输出 `✅ 已完成` 首行（会话卡没有"本轮完成"这一事实）；
+   * - 末轮四项流量全 0 但存在历史累计/上下文时，标注"末轮未产生模型调用"，
+   *   避免把真实零消耗误读成数据没读出来。
+   * run 卡不传此项，行为不变。
+   */
+  sessionCard?: boolean;
 }
 
 interface CumulativeParts {
@@ -121,14 +129,40 @@ function headerLines(
   options: UsageDisplayOptions | undefined,
 ): string[] {
   const lines: string[] = [];
-  lines.push(options?.completedLabel ?? '✅ 已完成');
+  if (!options?.sessionCard) {
+    lines.push(options?.completedLabel ?? '✅ 已完成');
+  }
   if (usage?.model) lines.push(`Model - ${usage.model}`);
   if (options?.showResult && options?.result) {
     lines.push(`结果 - ${options.result}`);
   }
   if (usage?.contextLength !== undefined) lines.push(contextLine(usage.contextLength, usage));
   if (usage?.compactCount) lines.push(`Compact - ${usage.compactCount}次`);
+  if (options?.sessionCard && sessionUsageHasNoFlow(usage)) {
+    lines.push('末轮未产生模型调用');
+  }
   return lines;
+}
+
+/**
+ * 末轮四项流量是否为零。累计字段存在（>0）说明会话有历史消耗，
+ * 不是 reader 没读到数据——此时 0 是末轮的真实消耗。
+ */
+function sessionUsageHasNoFlow(usage: UsageStatsInput | undefined): boolean {
+  if (!usage) return false;
+  const flowZero =
+    (usage.inputTokens ?? 0) === 0 &&
+    (usage.outputTokens ?? 0) === 0 &&
+    (usage.cacheReadTokens ?? 0) === 0 &&
+    (usage.cacheCreationTokens ?? 0) === 0;
+  if (!flowZero) return false;
+  const cumulativePositive = [
+    usage.cumulativeInputTokens,
+    usage.cumulativeOutputTokens,
+    usage.cumulativeCacheReadTokens,
+    usage.cumulativeTotalTokens,
+  ].some((value) => (value ?? 0) > 0);
+  return cumulativePositive;
 }
 
 /** 命中率分母由调用方给：real 分支是 input+cacheRead，estimate 分支是 totalInput。 */

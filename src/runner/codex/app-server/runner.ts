@@ -335,10 +335,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       // 实测），只有先 thread/resume（或 thread/start）把线程载入内存才能
       // 压缩。连接池复用期间线程本就在内存，resume 幂等无害；连接被
       // /stop、idle TTL 或进程重建后，这一步是 Compact 能工作的前提。
-      const resumeParams: ThreadResumeParams = {
-        threadId: opts.sessionId,
-        ...this.buildThreadParams(opts.cwd),
-      };
+      const resumeParams: ThreadResumeParams = this.buildResumeParams(opts.sessionId, opts.cwd);
       await client.request<ThreadResumeParams, ThreadStartResponse>('thread/resume', resumeParams);
 
       await client.request('thread/compact/start', { threadId: opts.sessionId });
@@ -465,6 +462,20 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     return params;
   }
 
+  /**
+   * `thread/resume` 必须排除全量历史：长会话的 full-history hydration 会把所有
+   * turn 塞进单行 JSON（可达 10MB+），超过 transport 的单行上限后连接被判
+   * parse_error，run 以 "transport closed" 失败，重拉进程重试仍会复现。桥从不
+   * 消费 `thread.turns`，需要历史时改走 `thread/turns/list` 等分页接口。
+   */
+  private buildResumeParams(threadId: string, cwd: string): ThreadResumeParams {
+    return {
+      threadId,
+      ...this.buildThreadParams(cwd),
+      excludeTurns: true,
+    };
+  }
+
   private buildTurnParams(message: string, opts: SpawnOptions): TurnStartParams {
     const params: TurnStartParams = {
       threadId: this.activeThreadId ?? '',
@@ -488,16 +499,13 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     this.installTurnHooks(anchor);
     const { client } = anchor;
 
-    const threadParams: ThreadStartParams = this.buildThreadParams(opts.cwd);
     let threadId: string;
     if (opts.sessionId) {
-      const resumeParams: ThreadResumeParams = {
-        threadId: opts.sessionId,
-        ...threadParams,
-      };
+      const resumeParams: ThreadResumeParams = this.buildResumeParams(opts.sessionId, opts.cwd);
       await client.request<ThreadResumeParams, ThreadStartResponse>('thread/resume', resumeParams);
       threadId = opts.sessionId;
     } else {
+      const threadParams: ThreadStartParams = this.buildThreadParams(opts.cwd);
       const threadResult = await client.request<ThreadStartParams, ThreadStartResponse>(
         'thread/start',
         threadParams,

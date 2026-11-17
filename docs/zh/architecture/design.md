@@ -1321,3 +1321,30 @@ rollout 的 `session_meta.session_id` 是**父** id（`thread_source: subagent`�
 按钮位置、200861、大目录裁剪后控件保留）、
 `tests/anchor/config-callback-perf/config-callback-perf.test.ts`（目录不变不补刷、
 变化补刷、`config.refresh` 走 PATCH）。
+
+### 9.30 codex app-server：`thread/resume` 必须排除全量历史
+
+**故障形态**：长会话恢复既有线程时，每条消息都以 `transport closed` 失败，重拉
+app-server 进程重试一次仍即刻复现；`/compact` 同样失败。
+
+**后果**：该会话的所有后续消息（含 `/compact`）都不可用，且失败与消息内容无关。
+
+**机制**：`thread/resume` 默认对 paginated thread 做 full-history hydration，把所有
+turn 连同 items 塞进**一行** JSON 响应。会话越用越长，这一行会超过 transport 的
+10MB 单行上限（`src/runner/common/jsonrpc/transport.ts` 的 `MAX_LINE_BYTES`），
+transport 判 `parse_error` 并主动关连接；`ConnectionBasedRunner` 的
+respawn-and-retry-once 只是重发同一个 `thread/resume`，于是再次撞同一行。压缩
+不删 rollout 里的历史 items，所以 `/compact` 也走同一条死路。app-server 自己会
+发 `deprecationNotice`：full-history hydration 已弃用，应改用
+`excludeTurns: true` + `thread/turns/list` / `thread/items/list` 分页。
+
+**约束**：`CodexAppServerRunner` 的 `thread/resume`（普通 run 与 `/compact` 两处）
+必须经 `buildResumeParams` 构造并带 `excludeTurns: true`；桥不消费
+`thread.turns`，排除全量历史无损。需要历史时按分页接口读取，不要让恢复路径
+把整个会话背回来。
+
+**守卫**：`src/runner/codex/app-server/app-server-integration.test.ts` 的
+`excludes full-history hydration on thread/resume for an existing session`
+（普通 run 的 resume 参数）与
+`runs a compact operation to completion via thread/compact/start`（compact 的
+resume 参数）。

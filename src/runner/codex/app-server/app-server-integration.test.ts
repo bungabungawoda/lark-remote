@@ -350,6 +350,53 @@ describePosix('CodexAppServerRunner integration', () => {
     await runner.dispose();
   });
 
+  it('excludes full-history hydration on thread/resume for an existing session', async () => {
+    // 长会话的 thread/resume 默认回吐全量 thread.turns：响应是一行可达 10MB+
+    // 的 JSON，超过 transport 的 10MB 单行上限后连接被判 parse_error，run 以
+    // "transport closed" 失败且重拉进程重试仍会复现。桥不消费 thread.turns，
+    // 必须显式 excludeTurns，历史改由 thread/turns/list 等分页接口按需读取。
+    const cwd = join(tmpDir, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const requestLog = join(tmpDir, 'resume-requests.jsonl');
+    const wrapper = join(tmpDir, 'resume-fake-server.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexport FAKE_SERVER_LOG="${requestLog}"\nexec "${process.execPath}" "${FAKE_SERVER}" "${join(FIXTURES, 'resume-turn.json')}"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      model: 'deepseek-v4-flash',
+      modelProvider: 'deepseek',
+    });
+
+    const events: AgentEvent[] = [];
+    for await (const event of runner.run('hello', { cwd, sessionId: 'th-aaa-111' })) {
+      events.push(event);
+    }
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype: string }) | undefined;
+    expect(result?.subtype).toBe('success');
+
+    const requests = readFileSync(requestLog, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.method);
+    const resume = requests.find((r) => r.method === 'thread/resume') as
+      { params: { threadId: string; excludeTurns?: boolean; config?: unknown } } | undefined;
+    expect(resume?.params.threadId).toBe('th-aaa-111');
+    expect(resume?.params.excludeTurns).toBe(true);
+    expect(resume?.params.config).toEqual({
+      'features.default_mode_request_user_input': true,
+    });
+
+    await runner.dispose();
+  });
+
   it('anchors the session-key assumption: thread.id is the session key (main thread: session_meta.session_id === thread.id)', async () => {
     // 验证行为：写回 store / result 事件的 session 键取自
     // thread/start 响应的 thread.id（turn/started 通知同值）。该链路依赖主线程
@@ -816,10 +863,14 @@ describePosix('CodexAppServerRunner integration', () => {
     expect(compactIndex).toBeGreaterThan(resumeIndex);
     const resumeParams = (
       requests[resumeIndex] as {
-        params: { threadId: string; config?: unknown };
+        params: { threadId: string; excludeTurns?: boolean; config?: unknown };
       }
     ).params;
     expect(resumeParams.threadId).toBe('th-aaa-999');
+    // 长会话的 thread/resume 默认做 full-history hydration，响应是一行可达
+    // 10MB+ 的 JSON，撞 transport 的 10MB 单行上限后连接被判 parse_error。
+    // 桥不消费 thread.turns，必须显式排除全量历史；历史改走分页接口。
+    expect(resumeParams.excludeTurns).toBe(true);
     // resume 路径同样下发 feature override，冷连接恢复后 request_user_input 仍可用
     expect(resumeParams.config).toEqual({
       'features.default_mode_request_user_input': true,

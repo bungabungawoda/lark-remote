@@ -740,3 +740,15 @@ Every agent's config-card model catalog loader (pi/codex/opencode/kimi, plus qod
 7. **Refresh button**: "🔄 Refresh Models" closes the first section (the current agent's config area), right before the section divider — the refresh re-reads that agent's provider/model list, which belongs to the whole section rather than any single field. The button row mirrors the form row layout (left column weight 2 empty + right column weight 3), aligned with and as wide as the control column; a bare body-level button would span the full row. Interactive controls hang directly off the `elements` of `column`/`body`, never inside a V1 `action` container. An explicit click returns the toast "Refreshing model list…"; failures are only logged — when no list was retrieved the card stays as-is, and being indistinguishable from "nothing changed" is accepted behavior.
 
 **Guards**: `src/router/config/common/catalog-signature.test.ts` (signature comparison, refresh-button placement, 200861, controls surviving large-catalog trimming) and `tests/anchor/config-callback-perf/config-callback-perf.test.ts` (no refresh on unchanged catalog, refresh on change, `config.refresh` going through PATCH).
+
+### 9.30 codex app-server: `thread/resume` Must Exclude Full History
+
+**Failure shape**: resuming a long-lived thread fails every message with `transport closed`; respawning the app-server process and retrying once reproduces it immediately. `/compact` fails the same way.
+
+**Consequence**: every later message on that session, including `/compact`, is unusable, and the failure is unrelated to the message content.
+
+**Mechanism**: by default `thread/resume` performs full-history hydration for a paginated thread and packs every turn and its items into a **single** JSON line. As the session grows, that line exceeds the transport's 10MB single-line limit (`MAX_LINE_BYTES` in `src/runner/common/jsonrpc/transport.ts`); the transport classifies it as `parse_error` and closes the connection. `ConnectionBasedRunner`'s respawn-and-retry-once simply resends the same `thread/resume` and hits the same line again. Compaction does not delete historical items from the rollout, so `/compact` takes the same dead path. The app-server itself emits a `deprecationNotice`: full-history hydration is deprecated; use `excludeTurns: true` plus `thread/turns/list` / `thread/items/list` pagination instead.
+
+**Constraint**: both `thread/resume` call sites in `CodexAppServerRunner` (a normal run and `/compact`) must build params through `buildResumeParams` with `excludeTurns: true`. The bridge never consumes `thread.turns`, so dropping the full history is lossless. Read history through the pagination endpoints; do not make the resume path carry the entire session back.
+
+**Guards**: `src/runner/codex/app-server/app-server-integration.test.ts` — `excludes full-history hydration on thread/resume for an existing session` (normal-run resume params) and `runs a compact operation to completion via thread/compact/start` (compact resume params).

@@ -47,6 +47,16 @@ session reader ────┘        （flow: live 优先；context/compact: js
 - **reader 兜底**：全部 8 个 `AgentSessionReader.readSessionContent` 产出 `AgentSessionUsage`（名单单源 `src/agent-kinds.ts` 的 `AGENT_KINDS`）。codebuddy 的 reader 优先读 CodeBuddy 的逐请求日志（jsonl 只有每个 turn 的末次请求），日志不可用时才回退 jsonl。
 - **reader 还有第二消费面**：`/resume`、自动恢复卡、完成通知卡直接展示 `readSessionContent` 的 usage。因此 reader 的 scope 正确性不能只靠“done 卡有 live 兜着”。
 
+### 会话卡的展示契约
+
+`/resume` 与自动恢复卡展示的是会话历史快照，复用 `formatUsageStats` 的会话卡模式。与 run 卡有三点不同：
+
+1. **flow 是末轮、0 是真实值**。四项流量取末个 turn 的采样之和；若末轮被中断、首次模型请求未返回，rollout 里没有采样，四项就是 0。累计字段仍取整个 session，所以会出现「Input/Output/Cached/Total 全 0、累计非零」。这不是数据丢失——`formatUsageStats` 在「flow 全 0 且累计非零」时标注「末轮未产生模型调用」。
+2. **不输出完成/结果首行**。会话卡不是一次 run 的完成报告，不写「✅ 已完成」；调用方也不传 `usageResult`。完成通知卡是例外：它按 run 终态（done/interrupted/error 等）映射标题，终态为 done 时才在 footer 显示 `结果 - completed`。
+3. **context/累计照常展示**。它们与末轮流量是不同 scope，不因末轮为 0 而省略。
+
+run 卡不进这个模式，首行与结果行行为不变。
+
 ---
 
 ## 3. 回归史（2026-07 → 2026-11）

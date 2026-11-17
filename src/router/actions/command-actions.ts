@@ -723,7 +723,6 @@ export function buildResumeLikeCard(
       agentKind: opts.agentKind,
       headerText: `📂 \`${opts.cwd}\`\n${opts.resumedLine}${opts.headerTail ? `\n${opts.headerTail}` : ''}`,
       title: `${isActive || hostRunning ? `⏳ ${opts.titleBase}（完成中）` : `${opts.idleIcon} ${opts.titleBase}`} · ${agentName}`,
-      usageResult: 'success',
       stillRunning: hostRunning,
       ...(opts.emptyPlaceholder !== undefined ? { emptyPlaceholder: opts.emptyPlaceholder } : {}),
       actions,
