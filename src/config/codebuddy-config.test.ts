@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadCodebuddyConfig, resolveCodebuddyConfigDir } from './codebuddy-config.js';
+import { loadCodebuddyCatalog } from './codebuddy-catalog.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 
 // 目录探针会 spawn 真二进制：测试一律 mock 掉（目录解析单测在 codebuddy-catalog.test.ts）。
@@ -26,6 +27,8 @@ describe('loadCodebuddyConfig', () => {
   let tmpDir: string;
 
   beforeEach(() => {
+    // shuffle 让「catalog wins」先跑时 mock 返回值会污染后续用例。
+    vi.mocked(loadCodebuddyCatalog).mockReturnValue(null);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-codebuddy-config-'));
   });
 
@@ -60,7 +63,6 @@ describe('loadCodebuddyConfig', () => {
   });
 
   it('catalog wins over settings.json (model list + display names + thought levels)', async () => {
-    const { loadCodebuddyCatalog } = await import('./codebuddy-catalog.js');
     vi.mocked(loadCodebuddyCatalog).mockReturnValue({
       models: [
         { id: 'hy4free', name: 'Hy4', efforts: ['high'] },

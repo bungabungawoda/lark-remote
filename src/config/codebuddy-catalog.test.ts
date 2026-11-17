@@ -730,6 +730,8 @@ describe('refreshCodebuddyCatalog 探针 fixture', () => {
     );
     const first = await ensureCodebuddyRegion({}, { waitMs: 2_000, binary: BINARY });
     expect(first).toBeNull();
+    // 负载下 2s 超时可能先于后台判定收尾：断言次数前先排空在途探针。
+    await _drainCodebuddyProbesForTest();
     expect(Number(fs.readFileSync(countFile, 'utf8'))).toBe(2);
 
     const started = Date.now();
