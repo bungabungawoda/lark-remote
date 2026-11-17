@@ -193,16 +193,6 @@ export function applyNewSession(
  */
 export const MAX_CONFIG_CARDS = 5;
 
-/**
- * config 回调响应的目标预算（ms）。飞书要求卡片回调 3 秒内响应；扣掉
- * message-handlers 的 flush 等待与网络往返，router 侧最多占 1.5s。
- *
- * 卡片动作把网络写全部移进后台渲染队列后，这个数只用于埋点里的
- * `budget_exceeded` 标记（验证回调链里是否还有意外阻塞），不再用于
- * `Promise.race` 抢占响应——抢占会留下一个仍在后台跑的 tail 传染后续动作。
- */
-export const CONFIG_CALLBACK_BUDGET_MS = 1_500;
-
 /** 后台渲染队列的合并窗口（ms）：连点期间的多次草稿变更合并成一次 PATCH 扇出。 */
 export const CONFIG_RENDER_DEBOUNCE_MS = 250;
 

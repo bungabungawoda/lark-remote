@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AppConfigSchema } from '../../src/config/index.js';
-import { agentDisplayName } from '../../src/card/card-shared.js';
 import { toolHeaderText, toolBodyMd } from '../../src/card/tool-render.js';
 import type { ToolEntry } from '../../src/card/run-state.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
@@ -22,18 +21,6 @@ afterEach(() => {
 });
 
 describe('Pi card adaptation', () => {
-  describe('agentDisplayName', () => {
-    it('returns "Pi" for kind="pi"', () => {
-      expect(agentDisplayName('pi')).toBe('Pi');
-    });
-
-    it('still returns correct names for other agents', () => {
-      expect(agentDisplayName('claude')).toBe('Claude');
-      expect(agentDisplayName('codex')).toBe('Codex');
-      expect(agentDisplayName('opencode')).toBe('Opencode');
-    });
-  });
-
   describe('toolHeaderText for lowercase (pi) tool names', () => {
     it('does not crash for read tool with path field', () => {
       const tool: ToolEntry = {

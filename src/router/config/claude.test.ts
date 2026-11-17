@@ -5,7 +5,7 @@ import path from 'node:path';
 import { ClaudeConfigBuilder } from './claude.js';
 import { CLAUDE_PERMISSION_MODES, type AppConfig } from '../../config/index.js';
 import {
-  fetchEndpointModels,
+  _probeEndpointModelsForTest,
   _invalidateEndpointModelsCacheForTest,
 } from '../../config/endpoint-models.js';
 
@@ -177,7 +177,7 @@ describe('ClaudeConfigBuilder', () => {
         ),
       );
       // 探测是异步的：先让它落进缓存，卡片（同步路径）才读得到
-      await fetchEndpointModels({
+      await _probeEndpointModelsForTest({
         baseUrl: 'https://relay.example.com/anthropic',
         apiKey: 'sk-test',
         anthropic: true,
@@ -195,7 +195,7 @@ describe('ClaudeConfigBuilder', () => {
       const { getModelOptionsFromSettings } = await import('../../config/index.js');
       vi.mocked(getModelOptionsFromSettings).mockReturnValue(['relay-a']);
       vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 404 })));
-      await fetchEndpointModels({
+      await _probeEndpointModelsForTest({
         baseUrl: 'https://relay.example.com/anthropic',
         apiKey: 'sk-test',
         anthropic: true,

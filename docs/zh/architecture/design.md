@@ -1174,11 +1174,6 @@ await 链。
 - 兄弟卡只能走 `Bridge.patchCard`（best-effort，失败即从集合剔除）—— 不能走
   `updateCardInPlace`：卡片过期时它每次都会补发一张新卡，越点越多。
 
-埋点（`src/common/config-perf.ts`，日志前缀 `[perf][config]`）供回归对比：
-`event=callback`（回调总耗时）、`event=apply`、`event=render`（merged/patches）、
-`event=catalog`（`sync_spawn=true` 只允许出现在 `hit=cold`）、`event=open`
-（prefetch_deferred）、`event=flush`（仅 config.* 回调）。
-
 ### 9.26 排队卡按 lane 占用者渲染：Compact 占队列时自报身份并禁用立即执行
 
 **起因（2026-10-09 线上）**：用户点了一次 🗜 Compact，12 秒后发消息，收到的
@@ -1241,9 +1236,6 @@ qoder/codebuddy）共用一个同步读契约：`src/config/catalog-cache.ts` �
 - 后台刷新单飞（并发点火只跑一次），失败保留上次成功快照并落负缓存（下拉框不变空）。
 - 冷启动（无快照且无在途刷新）保留一次同步加载，保证首帧就有真实清单；启动预热
   （`src/index.ts` warmXxx 系列）后生产路径几乎不会走到。
-- 每次读打 `event=catalog` 埋点：`hit=cold` 的 `sync_spawn=true` 是冷启动唯一允许
-  的一次同步加载，其它 hit 值出现 `sync_spawn=true` 即回归。
-
 **新增 agent 接入模板**：目录 loader 必须实现为 `SyncCatalog`（同步读快照 + 异步
 loadAsync），禁止在同步路径 spawn CLI；配置卡 builder 通过 `refreshCatalogs()`
 暴露该 loader 的异步刷新入口（见 §9.29）。
@@ -1319,7 +1311,7 @@ rollout 的 `session_meta.session_id` 是**父** id（`thread_source: subagent`�
 
 **守卫**：`src/router/config/common/catalog-signature.test.ts`（签名判定、刷新
 按钮位置、200861、大目录裁剪后控件保留）、
-`tests/anchor/config-callback-perf/config-callback-perf.test.ts`（目录不变不补刷、
+`tests/anchor/config-card-budget/config-card-budget.test.ts`（目录不变不补刷、
 变化补刷、`config.refresh` 走 PATCH）。
 
 ### 9.30 codex app-server：`thread/resume` 必须排除全量历史

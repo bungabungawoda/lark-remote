@@ -36,7 +36,6 @@ import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
 import {
   MAX_CONFIG_CARDS,
-  CONFIG_CALLBACK_BUDGET_MS,
   CONFIG_OPEN_PREFETCH_BUDGET_MS,
   CONFIG_SWITCH_NOTICE_BUDGET_MS,
   applyDefaultAgentSwitch,
@@ -48,7 +47,6 @@ import {
 import type { ConfigSwitchResult } from './shared.js';
 import { scheduleConfigRender } from './config-render.js';
 import { catalogSignature } from '../config/common/catalog-signature.js';
-import { logConfigPerf, ConfigPerfSpan } from '../../common/config-perf.js';
 
 export function ensurePendingConfig(host: CommandRouter): void {
   if (!host.pendingConfig) {
@@ -82,12 +80,6 @@ export function rememberConfigCard(host: CommandRouter, messageId: string | unde
     const oldest = host.configCardIds.values().next().value as string;
     host.configCardIds.delete(oldest);
   }
-}
-
-export interface ConfigRefreshStats {
-  patches: number;
-  t_build_ms: number;
-  t_patch_ms: number;
 }
 
 /**
@@ -124,15 +116,12 @@ function budgetConfigCard(card: object, where: 'inline' | 'patch'): object {
 export async function refreshConfigCards(
   host: CommandRouter,
   excludeMessageId?: string,
-): Promise<ConfigRefreshStats> {
-  const buildStart = Date.now();
+): Promise<number> {
   const built = host.buildConfigCard().card;
   // 与 inline 响应同一预算口径：超限卡的 PATCH 会被飞书整卡拒绝，
   // 再被 patchCard 的失败分支把这个 messageId 永久剔除。
   const card = built ? budgetConfigCard(built, 'patch') : undefined;
-  const t_build_ms = Date.now() - buildStart;
-  if (!card) return { patches: 0, t_build_ms, t_patch_ms: 0 };
-  const patchStart = Date.now();
+  if (!card) return 0;
   let patches = 0;
   for (const messageId of [...host.configCardIds]) {
     if (messageId === excludeMessageId) continue;
@@ -140,7 +129,7 @@ export async function refreshConfigCards(
     if (ok) patches += 1;
     else host.configCardIds.delete(messageId);
   }
-  return { patches, t_build_ms, t_patch_ms: Date.now() - patchStart };
+  return patches;
 }
 
 /**
@@ -156,7 +145,6 @@ export async function applyConfigFieldChange(
   newValue: string,
   ctx: CommandContext,
 ): Promise<CardActionResponse | void> {
-  const span = new ConfigPerfSpan();
   try {
     host.ensurePendingConfig();
 
@@ -167,19 +155,9 @@ export async function applyConfigFieldChange(
     for (const patch of patches) {
       host.setNestedValue(host.pendingConfig!, patch.key, patch.value);
     }
-    span.segment('apply');
 
     // 回调响应体直出这张卡（飞书原地替换 pre-click 卡，零额外网络写）。
     const card = host.buildConfigCard().card;
-    span.segment('build');
-    logConfigPerf('apply', {
-      cmd: 'config.set',
-      key,
-      agent: defaultAgent,
-      patches_in_callback: 0,
-      budget_exceeded: span.totalMs() > CONFIG_CALLBACK_BUDGET_MS,
-      ...span.fields(),
-    });
     if (!card) return;
 
     scheduleConfigRender(host, { ctx, refreshCatalogs: false, inlineMessageId: ctx.messageId });
@@ -268,7 +246,6 @@ export async function dispatchConfigAction(
         })
         .then(() => {
           scheduleConfigRender(host, { ctx, refreshCatalogs: false });
-          logConfigPerf('render', { trigger: 'user', patches: 0 });
         });
       return { toast: { type: 'info', content: '正在刷新模型清单…' } };
     }
@@ -285,7 +262,6 @@ export async function dispatchConfigAction(
         return;
       }
 
-      const span = new ConfigPerfSpan();
       try {
         const oldDefaultAgent = host.config.defaultAgent;
         host.config = setConfigValues(host.configPath, host.config, updates);
@@ -293,14 +269,6 @@ export async function dispatchConfigAction(
         // defaultAgent 切换的 session 处理）与文本直写路径共用，全是本地同步操作。
         const switchResult = host.propagateConfigSave(oldDefaultAgent, updates, ctx);
         host.pendingConfig = null;
-        span.segment('apply');
-        logConfigPerf('apply', {
-          cmd: 'config.save',
-          agent: host.config.defaultAgent,
-          fields: Object.keys(updates).length,
-          budget_exceeded: span.totalMs() > CONFIG_CALLBACK_BUDGET_MS,
-          ...span.fields(),
-        });
 
         // 目录预取 + 兄弟卡刷新进后台渲染队列（串行 + 合并）。切换通知仍在回调
         // 内发送（锚定契约：它是持久消息，成功不回 toast、失败才回退），但带预算
@@ -522,15 +490,12 @@ export async function cmdConfig(
   args: string[],
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  const span = new ConfigPerfSpan();
   // Ensure probe cache is populated before building the card.
   await probeAllAgents();
-  span.segment('probe');
 
   // 后台探测点火前先取目录基线：探测完成后比一次签名，只有清单真的变了才
   // 补刷卡片。必须在点火前取，否则基线里可能已经混进新清单。
   const beforeSignature = captureCatalogSignature(host);
-  span.segment('signature');
 
   // 动态清单探测：所有 agent 的 provider / 模型目录 + DSH/CodeBuddy 的既有预取。
   // 只给一个短预算，超时立即用缓存/兜底清单出卡，后台继续跑并合并渲染一次
@@ -542,18 +507,12 @@ export async function cmdConfig(
     sleep(CONFIG_OPEN_PREFETCH_BUDGET_MS),
   ]);
   const deferred = outcome !== prefetchDone;
-  span.segment('prefetch');
   if (deferred) {
     // 交给 router 在卡片发送并登记之后接上刷卡片（见 trackConfigOpenRefresh）：
     // 预取先于发卡落地时，新卡还没进 configCardIds，这里直接调度会漏掉它。
     // 基线一起带过去：目录没变化就一次 PATCH 都不发。
     host.trackConfigOpenRefresh(prefetch, beforeSignature);
   }
-  logConfigPerf('open', {
-    agent: host.config.defaultAgent,
-    prefetch_deferred: deferred,
-    ...span.fields(),
-  });
 
   // Check if this is a direct set command: /config <key> <value>
   // Command-style set: immediate write to disk, clear pendingConfig

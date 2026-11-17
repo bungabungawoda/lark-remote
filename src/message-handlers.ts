@@ -25,7 +25,6 @@ import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { actionFeedbackText } from './router/card-action-feedback.js';
 import { stopCurrentTurn } from './bridge/stop-current.js';
-import { logConfigPerf, ConfigPerfSpan } from './common/config-perf.js';
 
 /**
  * 会改 session 的卡片动作在分发前等待 inbound flush 的上限（ms）。
@@ -301,43 +300,16 @@ async function handleCardAction(ctx: HandlerContext, action: CardActionEvent) {
   const isImmediate = isImmediateAction(actionValue.cmd);
   const cwd = ctx.sessionStore.getCwd(userId) ?? '';
   const fullValue = buildCardActionFullValue(actionValue, action);
-  // config.* 的回调总耗时从「收到事件」起算（含 flush 与 router 全段），
-  // 这是飞书 3 秒预算真正约束的数字。flush 另有一条 event=flush 单列。
-  const callbackSpan = actionValue.cmd.startsWith('config.') ? new ConfigPerfSpan() : undefined;
 
   if (SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)) {
-    // flush 耗时只挂在 config.* 下面：这个埋点族的前缀是 `[perf][config]`，
-    // 非 config 动作（new-session / resume.use / ls.switch / ws.use）也算进来
-    // 会把 config 的 p50/p95 统计混入无关样本。`event=callback` 的行已经把
-    // flush 段算进 `t_flush_ms`，这里只在 config 上单列一条。
-    const flushSpan = callbackSpan ? new ConfigPerfSpan() : undefined;
     const flushP = ctx.assembler
       .flush(userId, chatId, 'flush')
       .catch((err: unknown) => ctx.logger.error('[control] inbound flush failed:', err));
     await Promise.race([flushP, sleep(SESSION_MUTATING_FLUSH_BUDGET_MS)]);
-    if (flushSpan) {
-      logConfigPerf('flush', { cmd: actionValue.cmd, ...flushSpan.fields() });
-      callbackSpan?.segment('flush');
-    }
   }
 
   if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {
     const response = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
-    if (callbackSpan) {
-      callbackSpan.segment('router');
-      const kind =
-        response && typeof response === 'object' && 'card' in response
-          ? 'card'
-          : response && typeof response === 'object' && 'toast' in response
-            ? 'toast'
-            : 'none';
-      logConfigPerf('callback', {
-        cmd: actionValue.cmd,
-        key: typeof actionValue.key === 'string' ? actionValue.key : undefined,
-        response: kind,
-        ...callbackSpan.fields(),
-      });
-    }
     return response;
   }
 

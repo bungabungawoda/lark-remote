@@ -490,10 +490,6 @@ describe('rollout-reader additional branches', () => {
       expect(isCodexSessionActive('deleted', { codexHome: tmpDir })).toBe(false);
     });
 
-    it('returns false for non-existent session', () => {
-      expect(isCodexSessionActive('ghost-id', { codexHome: tmpDir })).toBe(false);
-    });
-
     it('uses default 10-minute activeThresholdMs', () => {
       const file = createRollout(tmpDir, 'rollout-threshold.jsonl', metaLine('threshold', '/tmp'));
 

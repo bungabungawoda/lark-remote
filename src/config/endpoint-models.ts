@@ -276,12 +276,13 @@ function probe(target: EndpointModelsTarget, key: string): Promise<string[] | nu
 }
 
 /**
- * 探测端点的模型清单。
- *
- * 冷却期内直接返回缓存（失败时返回 null）；否则真的发一轮请求。并发调用共享
- * 同一轮请求。
+ * 直接触发一次 `probe` 的测试 seam：生产路径只用 `cachedEndpointModels` /
+ * `warmEndpointModels` / `forceEndpointModels`，它们内部都调这个私有函数。
+ * 协议方言、认证重试、分页等真实行为都落在 `probe` 上，这里导出供夹具回放测试。
  */
-export async function fetchEndpointModels(target: EndpointModelsTarget): Promise<string[] | null> {
+export async function _probeEndpointModelsForTest(
+  target: EndpointModelsTarget,
+): Promise<string[] | null> {
   const key = cacheKey(target);
   if (!key) return null;
   const hit = freshEntry(key);

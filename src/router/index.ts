@@ -8,7 +8,6 @@ import { resolveAlias } from '../order/alias-resolve.js';
 import type { AgentKind } from '../agent-kinds.js';
 import type { AgentSessionContentEvent, AgentSessionReader } from '../session-contract.js';
 import { getLogger } from '../logger/index.js';
-import { logConfigPerf } from '../common/config-perf.js';
 
 /** /config 打开时登记的后台目录探测槽位。 */
 interface ConfigOpenRefreshSlot {
@@ -859,17 +858,17 @@ export class CommandRouter {
 
   /** compact: 对当前会话发起压缩（bridge 收口）。 */
   async handleCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return sessionActions.handleCompact(this, value, ctx);
+    return this.bridge.handleCompactAction(value, ctx);
   }
 
   /** resume.compact: 对 /resume 选中的历史会话发起压缩（bridge 收口）。 */
   async handleResumeCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return sessionActions.handleResumeCompact(this, value, ctx);
+    return this.bridge.handleResumeCompact(value, ctx);
   }
 
   /** stop.session: 恢复卡上的「终止」——取消指定 session 的宿主 turn。 */
   async handleStopSession(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    return sessionActions.handleStopSession(this, value, ctx);
+    return this.bridge.handleStopSession(value, ctx);
   }
 
   /**
@@ -1433,9 +1432,9 @@ export class CommandRouter {
    * 把当前草稿刷到所有已知 config 卡片上（后台渲染队列调用）。
    * 被点击的卡由回调响应体的 `card` 字段原地替换，这里只刷兄弟卡；
    * `excludeMessageId` 跳过它，避免同消息重复 PATCH 触发飞书 230429。
-   * 返回各段耗时与成功 PATCH 数，供 `event=render` 埋点。
+   * 返回成功 PATCH 数。
    */
-  async refreshConfigCards(excludeMessageId?: string): Promise<configActions.ConfigRefreshStats> {
+  async refreshConfigCards(excludeMessageId?: string): Promise<number> {
     return configActions.refreshConfigCards(this, excludeMessageId);
   }
 
@@ -1479,13 +1478,6 @@ export class CommandRouter {
     void slot.prefetch.then(() => {
       const after = configActions.captureCatalogSignature(this);
       if (after === slot.before) {
-        logConfigPerf('render', {
-          skipped: true,
-          merged: 0,
-          patches: 0,
-          t_build_ms: 0,
-          t_patch_ms: 0,
-        });
         return;
       }
       this.scheduleConfigRender({

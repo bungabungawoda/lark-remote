@@ -983,7 +983,7 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).toContain('"cmd":"new-session"');
   });
 
-  it('claude run card hides compact button when runner lacks runCompact', async () => {
+  it('bridge wiring hides compact button when runner lacks runCompact', async () => {
     // 对照组：无 runCompact 能力的 runner → 终态卡不渲染 Compact 按钮。
     const runner = createStubRunner({
       mode: 'streaming',

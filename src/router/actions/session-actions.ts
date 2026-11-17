@@ -49,33 +49,6 @@ export async function handleNewSession(host: CommandRouter, ctx: CommandContext)
   await host.bridge.sendResult({ text }, ctx);
 }
 
-/** compact: 对当前会话发起压缩（bridge 收口）。 */
-export async function handleCompact(
-  host: CommandRouter,
-  value: CardActionPayload,
-  ctx: CommandContext,
-): Promise<void> {
-  await host.bridge.handleCompactAction(value, ctx);
-}
-
-/** resume.compact: 对 /resume 选中的历史会话发起压缩（bridge 收口）。 */
-export async function handleResumeCompact(
-  host: CommandRouter,
-  value: CardActionPayload,
-  ctx: CommandContext,
-): Promise<void> {
-  await host.bridge.handleResumeCompact(value, ctx);
-}
-
-/** stop.session: 恢复卡上的「终止」——取消指定 session 的宿主 turn。 */
-export async function handleStopSession(
-  host: CommandRouter,
-  value: CardActionPayload,
-  ctx: CommandContext,
-): Promise<void> {
-  await host.bridge.handleStopSession(value, ctx);
-}
-
 /**
  * Handle resume.page: paginate the /resume session list in place.
  * Mirrors handleLsPage — updates the same card, never sends a new one.

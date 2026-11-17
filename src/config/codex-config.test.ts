@@ -24,7 +24,10 @@ import {
   getCodexBundledModelSlugs,
   invalidateCodexBundledTestCache,
 } from '../../tests/lib/codex-bundled-test-helpers.js';
-import { fetchEndpointModels, _invalidateEndpointModelsCacheForTest } from './endpoint-models.js';
+import {
+  _probeEndpointModelsForTest,
+  _invalidateEndpointModelsCacheForTest,
+} from './endpoint-models.js';
 
 /** spawnProcessSync 成功返回形态 */
 const syncOk = (stdout: string) => ({ status: 0, stdout, stderr: '' });
@@ -331,7 +334,7 @@ describe('loadCodexConfig model options merge', () => {
       );
 
       // 先让探测落进缓存（卡片路径是同步读缓存）
-      await fetchEndpointModels({
+      await _probeEndpointModelsForTest({
         baseUrl: 'https://relay.example.com/v1',
         apiKey: 'sk-test',
       });
@@ -348,7 +351,7 @@ describe('loadCodexConfig model options merge', () => {
       mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
       vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 500 })));
 
-      await fetchEndpointModels({
+      await _probeEndpointModelsForTest({
         baseUrl: 'https://relay.example.com/v1',
         apiKey: 'sk-test',
       });

@@ -78,7 +78,7 @@
     "tests/misc/multi-agent-commands.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-user-feedback.test.ts",
     "src/router/ws-ls-filter.test.ts",
-    "tests/anchor/config-callback-perf/**/*.test.ts"
+    "tests/anchor/config-card-budget/**/*.test.ts"
   ],
   "infra-session": [
     "src/session/*.test.ts",

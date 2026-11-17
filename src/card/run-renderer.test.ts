@@ -2426,7 +2426,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('"cmd":"new-session"');
   });
 
-  it('claude run card hides compact button when runner lacks runCompact', () => {
+  it('renderer hides compact button when compactSupported is false', () => {
     let state = createInitialRunState('run-claude-no-cap');
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     const json = JSON.stringify(renderRunCard(state, { compactSupported: false }));

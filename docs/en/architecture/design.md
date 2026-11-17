@@ -682,8 +682,6 @@ Approach: `configCardIds` remembers the config cards that were interacted with (
 - Sibling cards may only use `Bridge.patchCard` (pure best-effort PATCH, dropped from the set on failure) — never `updateCardInPlace`: once a card has expired it re-sends a new card on every attempt, so the more you click, the more cards appear.
 - **Flush before exit**: `/exit` and `/restart` call `flushConfigRender` with the short `CONFIG_EXIT_FLUSH_BUDGET_MS`, so computed sibling PATCHes are not lost and a slow network cannot hold the process hostage.
 
-Observability (`src/common/config-perf.ts`, log prefix `[perf][config]`) for regression comparisons: `event=callback` (total callback time), `event=apply`, `event=render` (merged/patches), `event=catalog` (`sync_spawn=true` is only allowed on `hit=cold`), `event=open` (prefetch_deferred), `event=flush` (config.* callbacks only).
-
 ### 9.26 Queue Cards Render by Lane Occupant: Compact Holding the Queue Self-Reports and Disables "Run Immediately"
 
 **Origin (2026-10-09 production)**: the user clicked 🗜 Compact once, then sent a message 12 seconds later. The queue card read "⏳ Messages queued / position: 1st / 0 messages ahead", and execution began only after 7.8 seconds (≈ the remaining duration of that Compact). The user reasonably concluded "nothing is ahead of me, so why is it queued".
@@ -709,8 +707,6 @@ Every agent's config-card model catalog loader (pi/codex/opencode/kimi, plus qod
 - The synchronous read (the `buildFields` path) **never spawns a CLI because a TTL expired**: a fresh snapshot returns directly; an expired one returns the old snapshot (stale) and fires exactly one background async refresh; a key shift (binary / config dir / file fingerprint changed) returns the fallback instead of the old list and fires the refresh — letting the old identity's catalog masquerade as the new one would render, and even write back, a model id that does not exist for the current binary or config dir. Blocking the event loop does not only stall the config card, it also stalls run cards that are mid-stream PATCH.
 - The background refresh is single-flight (concurrent triggers run once); on failure it keeps the last successful snapshot and applies a negative cache (the dropdown never goes empty).
 - A cold start (no snapshot and no refresh in flight) keeps one synchronous load so the first frame shows the real catalog; with the startup warmers (`warmXxx` in `src/index.ts`) production almost never reaches it.
-- Every read logs an `event=catalog` line: `sync_spawn=true` is allowed only together with `hit=cold` (the single synchronous load of a cold start); `sync_spawn=true` on any other hit value is a regression.
-
 **Template for a new agent**: the catalog loader must be implemented as a `SyncCatalog` (synchronous snapshot read + async `loadAsync`); spawning a CLI on the synchronous path is forbidden. The config-card builder exposes that loader's async refresh through `refreshCatalogs()` (§9.29).
 
 ### 9.28 codex app-server: Notifications Must Be Filtered by Thread Ownership, Sub-agent Threads May Not Pollute the Session Pointer
@@ -739,7 +735,7 @@ Every agent's config-card model catalog loader (pi/codex/opencode/kimi, plus qod
 6. **Key shifts do not display the cache**: a catalog from an old identity must not masquerade as the new one (§9.27). On a key shift `read()` returns the fallback, so the first frame is not a cached snapshot and the landed probe always refreshes the card.
 7. **Refresh button**: "🔄 Refresh Models" closes the first section (the current agent's config area), right before the section divider — the refresh re-reads that agent's provider/model list, which belongs to the whole section rather than any single field. The button row mirrors the form row layout (left column weight 2 empty + right column weight 3), aligned with and as wide as the control column; a bare body-level button would span the full row. Interactive controls hang directly off the `elements` of `column`/`body`, never inside a V1 `action` container. An explicit click returns the toast "Refreshing model list…"; failures are only logged — when no list was retrieved the card stays as-is, and being indistinguishable from "nothing changed" is accepted behavior.
 
-**Guards**: `src/router/config/common/catalog-signature.test.ts` (signature comparison, refresh-button placement, 200861, controls surviving large-catalog trimming) and `tests/anchor/config-callback-perf/config-callback-perf.test.ts` (no refresh on unchanged catalog, refresh on change, `config.refresh` going through PATCH).
+**Guards**: `src/router/config/common/catalog-signature.test.ts` (signature comparison, refresh-button placement, 200861, controls surviving large-catalog trimming) and `tests/anchor/config-card-budget/config-card-budget.test.ts` (no refresh on unchanged catalog, refresh on change, `config.refresh` going through PATCH).
 
 ### 9.30 codex app-server: `thread/resume` Must Exclude Full History
 

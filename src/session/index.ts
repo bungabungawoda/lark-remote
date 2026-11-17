@@ -9,6 +9,6 @@ export { CodexSessionReader } from './codex/index.js';
 export { OpencodeSessionReader } from './opencode/index.js';
 export { PiSessionReader } from './pi/index.js';
 export { KimiSessionReader } from './kimi/index.js';
-export { DshSessionReader } from './dsh/index.js';
+export { DshSessionReader } from './dsh/sessions.js';
 export { CodebuddySessionReader } from './codebuddy/index.js';
-export { QoderSessionReader } from './qoder/index.js';
+export { QoderSessionReader } from './qoder/sessions.js';

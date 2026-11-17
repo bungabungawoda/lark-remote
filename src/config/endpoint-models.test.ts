@@ -6,7 +6,7 @@ vi.mock('../logger/index.js', async () =>
 );
 
 import {
-  fetchEndpointModels,
+  _probeEndpointModelsForTest,
   cachedEndpointModels,
   warmEndpointModels,
   _invalidateEndpointModelsCacheForTest,
@@ -84,7 +84,7 @@ describe('候选 URL', () => {
       }),
     );
 
-    const ids = await fetchEndpointModels({
+    const ids = await _probeEndpointModelsForTest({
       baseUrl: 'https://api.deepseek.com/anthropic',
       apiKey: 'sk-test',
       anthropic: true,
@@ -101,7 +101,7 @@ describe('候选 URL', () => {
   it('带版本段的 base 只按原样问 base/models', async () => {
     const { urls } = stubFetch(byPathname({ '/api/v3/models': openAiList('glm-5.2', 'kimi-k3') }));
 
-    const ids = await fetchEndpointModels({
+    const ids = await _probeEndpointModelsForTest({
       baseUrl: 'https://ark.example.com/api/v3',
       apiKey: 'sk-test',
     });
@@ -113,7 +113,7 @@ describe('候选 URL', () => {
   it('裸 host 会补 /v1 与 /models 两种写法', async () => {
     const { urls } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    await fetchEndpointModels({ baseUrl: 'https://bare.example.com' });
+    await _probeEndpointModelsForTest({ baseUrl: 'https://bare.example.com' });
 
     expect(urls.map((u) => u.pathname)).toEqual(['/models', '/v1/models']);
   });
@@ -121,7 +121,7 @@ describe('候选 URL', () => {
   it('base 末尾斜杠归一化', async () => {
     const { urls } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    await fetchEndpointModels({ baseUrl: 'https://relay.example.com/v1/', apiKey: 'k' });
+    await _probeEndpointModelsForTest({ baseUrl: 'https://relay.example.com/v1/', apiKey: 'k' });
 
     expect(urls.map((u) => u.pathname)).toEqual(['/v1/models']);
   });
@@ -137,7 +137,7 @@ describe('返回方言', () => {
       }),
     );
 
-    const ids = await fetchEndpointModels({
+    const ids = await _probeEndpointModelsForTest({
       baseUrl: 'https://gem.example.com/v1beta',
       apiKey: 'k',
     });
@@ -152,13 +152,13 @@ describe('返回方言', () => {
       }),
     );
 
-    expect(await fetchEndpointModels(tmp)).toEqual(['ok', 'by-name']);
+    expect(await _probeEndpointModelsForTest(tmp)).toEqual(['ok', 'by-name']);
   });
 
   it('重复 id 去重且保持服务端顺序', async () => {
     stubFetch(byPathname({ '/v1/models': openAiList('b', 'a', 'b') }));
 
-    expect(await fetchEndpointModels(tmp)).toEqual(['b', 'a']);
+    expect(await _probeEndpointModelsForTest(tmp)).toEqual(['b', 'a']);
   });
 });
 
@@ -175,7 +175,7 @@ describe('认证', () => {
       return { status: 401 };
     });
 
-    const ids = await fetchEndpointModels({
+    const ids = await _probeEndpointModelsForTest({
       baseUrl: 'https://relay.example.com/v1',
       apiKey: 'sk-test',
     });
@@ -194,7 +194,7 @@ describe('认证', () => {
       return { status: 403 };
     });
 
-    const ids = await fetchEndpointModels({
+    const ids = await _probeEndpointModelsForTest({
       baseUrl: 'https://relay.example.com/v1',
       apiKey: 'sk-test',
     });
@@ -206,7 +206,10 @@ describe('认证', () => {
   it('404 不换认证再试（同一 URL 只问一次）', async () => {
     const { urls } = stubFetch(() => ({ status: 404 }));
 
-    await fetchEndpointModels({ baseUrl: 'https://relay.example.com/v1', apiKey: 'sk-test' });
+    await _probeEndpointModelsForTest({
+      baseUrl: 'https://relay.example.com/v1',
+      apiKey: 'sk-test',
+    });
 
     expect(urls.length).toBe(1);
   });
@@ -214,7 +217,7 @@ describe('认证', () => {
   it('Anthropic base 带 anthropic-version 头', async () => {
     const { inits } = stubFetch(byPathname({ '/models': openAiList('m1') }));
 
-    await fetchEndpointModels({ ...tmp, anthropic: true });
+    await _probeEndpointModelsForTest({ ...tmp, anthropic: true });
 
     const headers = inits[0].headers as Record<string, string>;
     expect(headers['anthropic-version']).toBe('2023-06-01');
@@ -223,7 +226,7 @@ describe('认证', () => {
   it('没有 key 时不带认证头也能读公开清单', async () => {
     const { inits } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    await fetchEndpointModels({ baseUrl: 'https://relay.example.com/v1' });
+    await _probeEndpointModelsForTest({ baseUrl: 'https://relay.example.com/v1' });
 
     const headers = inits[0].headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
@@ -244,14 +247,14 @@ describe('分页', () => {
       return { status: 200, body: { data: [{ id: 'b' }], has_more: false } };
     });
 
-    expect(await fetchEndpointModels(tmp)).toEqual(['a', 'b']);
+    expect(await _probeEndpointModelsForTest(tmp)).toEqual(['a', 'b']);
   });
 
   it('has_more 却不给 last_id → 视为读不全，返回 null', async () => {
     // 半份清单不是清单：当成「没有清单」比当成「只有这些」安全。
     stubFetch(() => ({ status: 200, body: { data: [{ id: 'a' }], has_more: true } }));
 
-    expect(await fetchEndpointModels(tmp)).toBeNull();
+    expect(await _probeEndpointModelsForTest(tmp)).toBeNull();
   });
 
   it('翻页时以 limit=1000 请求', async () => {
@@ -262,7 +265,7 @@ describe('分页', () => {
       return { status: 200, body: { data: [{ id: 'b' }] } };
     });
 
-    await fetchEndpointModels(tmp);
+    await _probeEndpointModelsForTest(tmp);
 
     expect(urls[1].searchParams.get('limit')).toBe('1000');
     expect(urls[1].searchParams.get('after_id')).toBe('a');
@@ -272,19 +275,19 @@ describe('分页', () => {
 describe('失败路径', () => {
   it('全部候选都 404 → null，不抛', async () => {
     stubFetch(() => ({ status: 404 }));
-    expect(await fetchEndpointModels(tmp)).toBeNull();
+    expect(await _probeEndpointModelsForTest(tmp)).toBeNull();
   });
 
   it('200 但不是 JSON → 换下一个候选；全不成 → null', async () => {
     vi.stubGlobal('fetch', () =>
       Promise.resolve(new Response('<html>oops</html>', { status: 200 })),
     );
-    expect(await fetchEndpointModels(tmp)).toBeNull();
+    expect(await _probeEndpointModelsForTest(tmp)).toBeNull();
   });
 
   it('空清单 → null（不是空数组）', async () => {
     stubFetch(byPathname({ '/v1/models': { data: [] } }));
-    expect(await fetchEndpointModels(tmp)).toBeNull();
+    expect(await _probeEndpointModelsForTest(tmp)).toBeNull();
   });
 
   it('网络错误 / abort → null', async () => {
@@ -292,13 +295,13 @@ describe('失败路径', () => {
       status: 0,
       throws: Object.assign(new Error('aborted'), { name: 'AbortError' }),
     }));
-    expect(await fetchEndpointModels(tmp)).toBeNull();
+    expect(await _probeEndpointModelsForTest(tmp)).toBeNull();
   });
 
   it('每个请求都带 8s 超时信号', async () => {
     const { inits } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    await fetchEndpointModels(tmp);
+    await _probeEndpointModelsForTest(tmp);
 
     expect(inits[0].signal).toBeInstanceOf(AbortSignal);
   });
@@ -308,7 +311,7 @@ describe('缓存', () => {
   it('命中后不再请求；清缓存后重新请求', async () => {
     const { urls } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    await fetchEndpointModels(tmp);
+    await _probeEndpointModelsForTest(tmp);
     expect(cachedEndpointModels(tmp)).toEqual(['m1']);
     expect(urls.length).toBe(1);
 
@@ -326,7 +329,7 @@ describe('缓存', () => {
   it('失败进负缓存：冷却期内不重复请求', async () => {
     const { urls } = stubFetch(() => ({ status: 500 }));
 
-    await fetchEndpointModels(tmp);
+    await _probeEndpointModelsForTest(tmp);
     warmEndpointModels(tmp);
     await new Promise((r) => setImmediate(r));
 
@@ -336,7 +339,10 @@ describe('缓存', () => {
   it('并发探测只发一轮请求', async () => {
     const { urls } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    const [a, b] = await Promise.all([fetchEndpointModels(tmp), fetchEndpointModels(tmp)]);
+    const [a, b] = await Promise.all([
+      _probeEndpointModelsForTest(tmp),
+      _probeEndpointModelsForTest(tmp),
+    ]);
 
     expect(a).toEqual(b);
     expect(urls.length).toBe(1);
@@ -345,8 +351,8 @@ describe('缓存', () => {
   it('不同的 key 分开缓存（同 base 换 key 会重探）', async () => {
     const { urls } = stubFetch(byPathname({ '/v1/models': openAiList('m1') }));
 
-    await fetchEndpointModels(tmp);
-    await fetchEndpointModels({ ...tmp, apiKey: 'sk-other' });
+    await _probeEndpointModelsForTest(tmp);
+    await _probeEndpointModelsForTest({ ...tmp, apiKey: 'sk-other' });
 
     expect(urls.length).toBe(2);
   });
@@ -355,7 +361,7 @@ describe('缓存', () => {
     const { urls } = stubFetch(byPathname({}));
 
     expect(cachedEndpointModels({ baseUrl: '  ' })).toBeUndefined();
-    expect(await fetchEndpointModels({ baseUrl: '' })).toBeNull();
+    expect(await _probeEndpointModelsForTest({ baseUrl: '' })).toBeNull();
     expect(urls.length).toBe(0);
   });
 });

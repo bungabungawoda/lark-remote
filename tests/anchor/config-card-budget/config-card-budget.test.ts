@@ -6,7 +6,6 @@ import { createStubConnector } from '../../lib/bridge-stubs.js';
 import { createRouterFixture } from '../../lib/router-fixture.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import {
-  CONFIG_CALLBACK_BUDGET_MS,
   CONFIG_RENDER_DEBOUNCE_MS,
   CONFIG_SWITCH_NOTICE_BUDGET_MS,
 } from '../../../src/router/actions/shared.js';
@@ -17,7 +16,7 @@ import * as probeModule from '../../../src/runner/probe.js';
 import * as configActions from '../../../src/router/actions/config-actions.js';
 import { getConfigBuilder } from '../../../src/router/config/index.js';
 
-const tmpBase = mkdtempSync(path.join(os.tmpdir(), 'config-perf-anchor-'));
+const tmpBase = mkdtempSync(path.join(os.tmpdir(), 'config-budget-anchor-'));
 // 断开真实家目录：claude 的 buildFields 会读 ~/.claude/settings.json，若宿主配了
 // 自定义端点，cachedEndpointModels 会真的发网络探测，清单在用例运行中途落地会
 // 让目录签名「有时变有时不变」，补刷断言随宿主环境偶发翻转。CLAUDE_SETTINGS_PATH
@@ -54,17 +53,10 @@ function makeFixture(tmpName: string) {
 }
 
 /**
- * 回调响应预算锚点：飞书卡片回调 3 秒上限，router 侧预算
- * CONFIG_CALLBACK_BUDGET_MS（1.5s）。config.set/save 的回调链只做内存操作 +
- * 写盘，本锚点断言常量区间（防误改超预算）与响应体形态。
+ * 回调响应锚点：config.set/save 的回调链只做内存操作 + 写盘，网络写全部进后台
+ * 渲染队列。本锚点断言响应体形态（直出卡片 + toast、零网络写）。
  */
-describe('config 回调响应预算锚点', () => {
-  it('回调预算常量在安全区间', () => {
-    // 3s 飞书上限；预算必须小于它并留网络余量，但不小于 500ms（真写盘需要）。
-    expect(CONFIG_CALLBACK_BUDGET_MS).toBeGreaterThanOrEqual(500);
-    expect(CONFIG_CALLBACK_BUDGET_MS).toBeLessThanOrEqual(2_500);
-  });
-
+describe('config 回调响应锚点', () => {
   it('config.set 回调链零网络写：响应体直出卡片 + toast', async () => {
     const { router, connector } = makeFixture('set-inline');
     const response = await router.handleCardAction(

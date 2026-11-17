@@ -14,13 +14,11 @@
  * 切换 Agent 的持久化通知**不在此队列**：锚定契约要求它在 config.save 回调内
  * 同步发送（成功不回 toast、失败回退 info toast，且卡片刷新失败不得吞掉通知）。
  *
- * 埋点 `event=render` 的 merged / patches / t_*_ms 可直接验证合并与耗时。
  */
 import type { CommandContext } from '../../bridge/index.js';
 import type { CommandRouter } from '../index.js';
 import { CONFIG_RENDER_DEBOUNCE_MS } from './shared.js';
 import { getLogger } from '../../logger/index.js';
-import { logConfigPerf, ConfigPerfSpan } from '../../common/config-perf.js';
 
 export interface ConfigRenderRequest {
   ctx: CommandContext;
@@ -36,12 +34,11 @@ export interface ConfigRenderRequest {
 export interface ConfigRenderState {
   timer: ReturnType<typeof setTimeout> | undefined;
   pending: ConfigRenderRequest | undefined;
-  merged: number;
   tail: Promise<void>;
 }
 
 export function createConfigRenderState(): ConfigRenderState {
-  return { timer: undefined, pending: undefined, merged: 0, tail: Promise.resolve() };
+  return { timer: undefined, pending: undefined, tail: Promise.resolve() };
 }
 
 /**
@@ -54,7 +51,6 @@ export function scheduleConfigRender(host: CommandRouter, req: ConfigRenderReque
   // `/c` 文本命令的用户消息 id 通过 skipRemember 排除。
   if (!req.skipRemember) host.rememberConfigCard(req.ctx.messageId);
 
-  if (state.pending) state.merged += 1;
   // 合并语义：refreshCatalogs 取「或」；ctx / inlineMessageId 取最后一次。
   state.pending = {
     ctx: req.ctx,
@@ -87,34 +83,18 @@ async function runConfigRender(host: CommandRouter): Promise<void> {
   const req = state.pending;
   if (!req) return;
   state.pending = undefined;
-  const merged = state.merged;
-  state.merged = 0;
 
   const task = async (): Promise<void> => {
-    const span = new ConfigPerfSpan();
-    let patches = 0;
     try {
       if (req.refreshCatalogs) {
         await host.prefetchConfigCardCatalogs();
-        span.segment('prefetch');
       }
 
       // 最后一次状态赢：从最新草稿重新建卡，不复用任何中间帧。
       // 复用 refreshConfigCards，兄弟卡同步语义单一事实源。
-      const stats = await host.refreshConfigCards(req.inlineMessageId);
-      patches = stats.patches;
-      span.segment('patch');
-
-      logConfigPerf('render', {
-        merged,
-        patches,
-        t_build_ms: stats.t_build_ms,
-        t_patch_ms: stats.t_patch_ms,
-        ...span.fields(),
-      });
+      await host.refreshConfigCards(req.inlineMessageId);
     } catch (err) {
       getLogger().error('[router] config 后台渲染失败:', err);
-      logConfigPerf('render', { merged, patches, ok: false, ...span.fields() });
     }
   };
 
