@@ -1958,7 +1958,7 @@ function callsAt(
   return mockLogger[level].mock.calls.filter((call) => predicate(call[0]));
 }
 
-describe('Bridge.forwardToClaude logging probes', () => {
+describe('Bridge.forwardToClaude run lifecycle', () => {
   beforeEach(() => {
     mockLogger.debug.mockClear();
     mockLogger.info.mockClear();
@@ -1966,96 +1966,35 @@ describe('Bridge.forwardToClaude logging probes', () => {
     mockLogger.error.mockClear();
   });
 
-  it('emits the full happy-path probe sequence (entry → activeRuns.set → cardSession → runner → result → activeRuns.delete)', async () => {
+  it('releases the workspace after a run so the next message is accepted', async () => {
     const events: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'pong' }] } },
       { type: 'result', subtype: 'success', session_id: 's1' },
     ];
-    const { bridge, sessionStore } = makeBridge({
+    const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({ mode: 'streaming', events: events }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     await bridge.forwardToClaude('hello world', ctx);
 
-    // 1. Entry debug log
-    const entries = callsAt(
-      'debug',
-      (m) => typeof m === 'string' && m.includes('[lark-remote] forward entry'),
-    );
-    expect(entries.length).toBeGreaterThanOrEqual(1);
-    expect(String(entries[0]?.[0])).toContain('user1');
-
-    // 2. activeRuns.set
-    const setLogs = callsAt(
-      'info',
-      (m) => typeof m === 'string' && m.includes('[lark-remote] activeRuns.set'),
-    );
-    expect(setLogs.length).toBe(1);
-
-    // 3. cardSession.start ok
-    expect(
-      callsAt(
-        'info',
-        (m) => typeof m === 'string' && m.includes('[lark-remote] cardSession.start() ok'),
-      ).length,
-    ).toBe(1);
-
-    // 4. runner.run begin
-    expect(
-      callsAt(
-        'info',
-        (m) => typeof m === 'string' && m.includes('[lark-remote] runner.run() begin'),
-      ).length,
-    ).toBe(1);
-    // runner.run begin should include the message preview
-    expect(
-      String(
-        callsAt(
-          'info',
-          (m) => typeof m === 'string' && m.includes('[lark-remote] runner.run() begin'),
-        )[0]?.[0],
-      ),
-    ).toContain('hello world');
-
-    // 5. system.init received
-    expect(
-      callsAt(
-        'info',
-        (m) => typeof m === 'string' && m.includes('[lark-remote] system.init received'),
-      ).length,
-    ).toBe(1);
-
-    // 6. result event received
-    expect(
-      callsAt(
-        'info',
-        (m) => typeof m === 'string' && m.includes('[lark-remote] result event received'),
-      ).length,
-    ).toBe(1);
-
-    // 7. runner stream end with sawResult=true
-    const streamEnd = callsAt(
-      'info',
-      (m) => typeof m === 'string' && m.includes('[lark-remote] runner stream end'),
-    );
-    expect(streamEnd.length).toBe(1);
-    expect(String(streamEnd[0]?.[0])).toContain('sawResult=true');
-
-    // 8. activeRuns.delete — CRITICAL: was missing before, blocks the queue forever if not emitted
-    const deleteLogs = callsAt(
-      'info',
-      (m) => typeof m === 'string' && m.includes('[lark-remote] activeRuns.delete'),
-    );
-    expect(deleteLogs.length).toBe(1);
-
-    // No error logs on happy path
+    expect(bridge.isBusyFor(tmpDir)).toBe(false);
+    // 用户能看到本轮正文，而不是只看到一张停在运行态的空卡。
+    expect(JSON.stringify(connector._sent)).toContain('pong');
+    // 释放后的工作目录必须能接下一轮；若 activeRuns.delete 丢失，这里会被
+    // busy 分支静默丢弃。
+    await bridge.forwardToClaude('second', ctx);
+    expect(JSON.stringify(connector._sent)).not.toContain('此工作目录正在处理中');
     expect(mockLogger.error).not.toHaveBeenCalled();
   });
 
-  it('emits a workspace-busy warn log and drops the message when activeRuns is occupied', async () => {
+  it('tells the user when a direct forward is dropped because the workspace is busy', async () => {
     const hangingRunner = createHangingRunner();
-    const { bridge, sessionStore } = makeBridge({ runner: hangingRunner, idleTimeoutMs: 60_000 });
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: hangingRunner,
+      idleTimeoutMs: 60_000,
+    });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     // First call: occupies activeRuns and hangs (NOT awaited so it doesn't block the test)
@@ -2067,13 +2006,8 @@ describe('Bridge.forwardToClaude logging probes', () => {
     // Second call: should hit the workspace-busy branch (NOT enqueued, direct call)
     await bridge.forwardToClaude('second', ctx);
 
-    const busy = callsAt(
-      'warn',
-      (m) => typeof m === 'string' && m.includes('[lark-remote] cwd busy, dropping message'),
-    );
-    expect(busy.length).toBe(1);
-    expect(String(busy[0]?.[0])).toContain('user1');
-    expect(String(busy[0]?.[0])).toContain(tmpDir);
+    // 静默丢弃是用户可见的失败：必须收到「正在处理中」的提示。
+    expect(JSON.stringify(connector._sent)).toContain('此工作目录正在处理中，请 /stop 后重试');
 
     // Cleanup: resolve the hang so the dangling first promise settles
     resolveHanging(hangingRunner);

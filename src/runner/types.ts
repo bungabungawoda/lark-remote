@@ -653,11 +653,6 @@ export interface Runner {
 // Multi-Agent Adapter Types
 // =============================================================================
 
-// Agent 名单与显示名住在 `src/agent-kinds.ts`（中立层，config/session/card 都
-// 要用）；本模块只 import `AgentKind` 类型来签名 runner 契约。保留旧路径的
-// re-export 兼容调用方，但值仍只由 agent-kinds.ts 定义。
-export { AGENT_DISPLAY_NAMES } from '../agent-kinds.js';
-
 /**
  * Compact 能力声明（运行时门控的能力清单，编译期强制完整）。
  *

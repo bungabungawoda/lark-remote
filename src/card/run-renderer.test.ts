@@ -9,7 +9,8 @@ import {
 import { renderRunCard, statusLine } from './run-renderer.js';
 import { renderRunCardDetailed, FINAL_ANSWER_OVERFLOW_MARKER } from './run-renderer.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
-import { displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
+import { HEADER_DISPLAY_MAX } from './tool-render.js';
+import { displayWidth } from '../common/text-width.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import { frontOmissionMarker } from '../common/truncate.js';
 

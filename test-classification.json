@@ -141,6 +141,7 @@
     "src/error-classification.test.ts",
     "src/common/fs.test.ts",
     "src/common/truncate.test.ts",
+    "src/common/truncate.property.test.ts",
     "src/common/guards.test.ts",
     "src/common/ttl-cache.test.ts",
     "src/common/turn-failure.test.ts",

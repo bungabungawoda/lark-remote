@@ -38,11 +38,17 @@ function makeRunner(opts: Record<string, unknown> = {}): ClaudeRunner {
   return runner;
 }
 
-/** 收集一整个 turn 的事件，超时则拒绝（防挂死类断言需要确定性终止）。 */
+/**
+ * 收集一整个 turn 的事件，超时则拒绝（防挂死类断言需要确定性终止）。
+ *
+ * 预算必须覆盖「spawn node mock + 首轮模块加载」在 Windows / 并行 worker
+ * 下的正常耗时（vitest.config.ts 的 WIN_SPAWN_TIMEOUT 注释实测 7–10s）。
+ * 3s 是正常路径也会踩到的假红，不是挂死检测。
+ */
 async function collectRunWithTimeout(
   runner: ClaudeRunner,
   message: string,
-  timeoutMs = 3000,
+  timeoutMs = 15_000,
 ): Promise<AgentEvent[]> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
@@ -467,7 +473,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     // 等待响应而 turn 永挂（无审批卡、无超时）。
     createMockClaude({ MOCK_SCENARIO: 'unknown-subtype' });
     const runner = makeRunner({ permissionMode: 'default' });
-    const events = await collectRunWithTimeout(runner, 'run', 3000);
+    const events = await collectRunWithTimeout(runner, 'run');
 
     const approvals = events.filter((e) => e.type === 'approval_requested');
     expect(approvals).toHaveLength(0);
@@ -499,7 +505,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     // 直接拒绝该请求（解析失败同款 deny 兜底），不把坏卡片上抛给用户。
     createMockClaude({ MOCK_SCENARIO: 'question-dup' });
     const runner = makeRunner({ permissionMode: 'default' });
-    const events = await collectRunWithTimeout(runner, 'ask', 3000);
+    const events = await collectRunWithTimeout(runner, 'ask');
 
     const approvals = events.filter((e) => e.type === 'approval_requested');
     expect(approvals).toHaveLength(0);
@@ -512,7 +518,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     // 直接 deny 兜底，不把坏卡片上抛给用户。
     createMockClaude({ MOCK_SCENARIO: 'question-no-options' });
     const runner = makeRunner({ permissionMode: 'default' });
-    const events = await collectRunWithTimeout(runner, 'ask', 3000);
+    const events = await collectRunWithTimeout(runner, 'ask');
 
     const approvals = events.filter((e) => e.type === 'approval_requested');
     expect(approvals).toHaveLength(0);
@@ -559,7 +565,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
       MOCK_RECORD_STDIN: stdinFile,
     });
     const runner = makeRunner({ permissionMode: 'default' });
-    await collectRunWithTimeout(runner, 'ask', 3000);
+    await collectRunWithTimeout(runner, 'ask');
 
     await runner.respondApproval('req-dup-1', { action: 'accept' });
     await vi.waitFor(

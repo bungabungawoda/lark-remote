@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { toolHeaderText, toolBodyMd, displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
+import { toolHeaderText, toolBodyMd, HEADER_DISPLAY_MAX } from './tool-render.js';
 import {
+  displayWidth,
   displayWidth as twDisplayWidth,
   truncateToDisplayWidth,
   truncateMiddleToDisplayWidth,

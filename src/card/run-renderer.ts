@@ -1036,10 +1036,11 @@ export function renderRunCardDetailed(
   if (state.finalAnswer?.content.trim()) {
     return buildFinalAnswerPriorityCard(state, options);
   }
-  return { card: renderLegacyRunCard(state, options), finalAnswerStatus: 'none' };
+  return { card: renderTimelineRunCard(state, options), finalAnswerStatus: 'none' };
 }
 
-function renderLegacyRunCard(state: RunState, options: RunCardRenderOptions): object {
+/** 时间线卡：finalAnswer 未就绪时的常规流式渲染（不是历史兼容路径）。 */
+function renderTimelineRunCard(state: RunState, options: RunCardRenderOptions): object {
   // 先估后建：用廉价估算预测是否超 28KB 预算，明显超预算直接跳过完整卡构建走
   // degraded。groups/prepared 只算一次，测量与正式渲染共用同一份截断结果，
   // 避免影子测量 + 正式渲染对每个超限块双倍截断。

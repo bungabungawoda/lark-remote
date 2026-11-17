@@ -20,13 +20,6 @@ import {
 } from '../common/tool-summary.js';
 import { truncateMiddleToDisplayWidth } from '../common/text-width.js';
 
-// 这两个宽度工具原本住在这里；resume 卡片也要用，已下沉到 common。
-export {
-  displayWidth,
-  truncateMiddleToDisplayWidth,
-  truncateToDisplayWidth,
-} from '../common/text-width.js';
-
 /**
  * 面板标题的显示宽度上限（半角单位，CJK/emoji 记 2）。
  *
