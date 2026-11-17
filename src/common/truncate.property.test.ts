@@ -132,15 +132,27 @@ describe('markdown table budgets (property)', () => {
         }
         expect(countMarkdownTables(out)).toBeLessThanOrEqual(maxTables);
         expect(out).toContain('表格已省略');
-        // 非表格正文必须原样保留（只删最旧的表格块）。
+        // 非表格正文必须原样保留（只删最旧的表格块）；空白分隔行随块一起删除。
         for (const line of text.split('\n')) {
-          if (!line.startsWith('|') && !line.startsWith('###')) {
-            expect(out).toContain(line);
-          }
+          if (line.startsWith('|') || line.startsWith('###') || line.trim() === '') continue;
+          expect(out).toContain(line);
         }
       }),
       { numRuns: 60 },
     );
+  });
+
+  it('drops blank separators together with the oldest table block', () => {
+    const text =
+      '\ntext 0 \n  \n### table 1\n| a | b |\n|---|---|\n\n' +
+      '### table 1\n| a | b |\n|---|---|\n\n\ntext 1 \n';
+    const out = truncateMarkdownTables(text, 1);
+
+    expect(countMarkdownTables(out)).toBe(1);
+    expect(out).toContain('表格已省略');
+    // 空白分隔行属于被删表格块；非空正文仍须保留。
+    expect(out).toContain('text 0 ');
+    expect(out).toContain('text 1 ');
   });
 
   it('dropOldestMarkdownTables removes at least the requested tables when enough exist', () => {
