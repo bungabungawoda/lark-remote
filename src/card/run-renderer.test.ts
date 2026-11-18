@@ -4358,6 +4358,37 @@ describe('renderRunCard · goal 可见性', () => {
 describe('approval area budget', () => {
   const CARD_BUDGET_BYTES = 28_000;
 
+  it('truncatedSkeleton 仍超预算时降级为固定最小卡片并通过双预算', () => {
+    let state = createInitialRunState('run-extreme-approval-final-safety');
+    for (let i = 0; i < 30; i++) {
+      state = reduceRunState(state, {
+        type: 'approval_requested',
+        requestId: i + 1,
+        kind: 'command',
+        threadId: 'th-3',
+        turnId: 'tn-3',
+        itemId: 'item-3',
+        view: {
+          requestId: i + 1,
+          kind: 'command',
+          command: `cmd-${i}`,
+          reason: 'r'.repeat(30_000),
+          availableDecisions: ['accept', 'decline'],
+        },
+      } as never);
+    }
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    expect(json).toContain('输入过大');
+    expect(json).toContain('"cmd":"approval.respond"');
+    expect(json).toContain('"cmd":"new-session"');
+    expect(json).not.toContain('第 1 题的题面');
+    expectNoV1ActionContainer(json);
+  });
+
   it('超长 reason 的审批卡仍在字节与元素预算内', () => {
     let state = createInitialRunState('run-approval-huge-reason');
     state = reduceRunState(state, {

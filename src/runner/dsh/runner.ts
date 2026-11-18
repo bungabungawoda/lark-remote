@@ -728,6 +728,7 @@ export class DshRunner implements AgentRunner {
     let sessionId = opts.sessionId;
     let terminalEmitted = false;
     let promptRequestId: string | null = null;
+    let markerPreserved = false;
     try {
       const started = yield* this.ensureStartupSession(opts, abort);
       if (started === null) {
@@ -760,6 +761,7 @@ export class DshRunner implements AgentRunner {
       );
       promptRequestId = driven.promptRequestId;
       terminalEmitted = driven.terminalEmitted;
+      markerPreserved = driven.markerPreserved;
     } catch (err) {
       // createSession 等启动期失败也产出 error result（而非抛异常），
       // 由本 catch 统一转 error result；state 清理在 finally。
@@ -776,7 +778,7 @@ export class DshRunner implements AgentRunner {
         terminalEmitted = true;
       }
     } finally {
-      this.releaseRunState(abort, sessionId, promptRequestId);
+      this.releaseRunState(abort, sessionId, promptRequestId, markerPreserved);
     }
 
     if (!terminalEmitted) {
@@ -868,9 +870,18 @@ export class DshRunner implements AgentRunner {
     message: string,
     abort: AbortController,
     prepared: Extract<PreparedTurn, { ok: true }>,
-  ): AsyncGenerator<AgentEvent, { promptRequestId: string | null; terminalEmitted: boolean }> {
+  ): AsyncGenerator<
+    AgentEvent,
+    {
+      promptRequestId: string | null;
+      terminalEmitted: boolean;
+      markerPreserved: boolean;
+    }
+  > {
     let promptRequestId: string | null = null;
+    let submittedPromptRequestId: string | null = null;
     try {
+      submittedPromptRequestId = this.activePromptRequestId;
       const submitted = await this.submitPrompt(sessionId, cwd, message, abort.signal);
       promptRequestId = submitted.promptRequestId;
 
@@ -878,7 +889,7 @@ export class DshRunner implements AgentRunner {
         // stop() 在 prompt 已受理后到达：cancel 由 stop() 发出，这里直接收尾，
         // 不再打开 mux（否则会看到 cancel 产生的 turn/end 事件）。
         yield interruptedResult(sessionId);
-        return { promptRequestId, terminalEmitted: true };
+        return { promptRequestId, terminalEmitted: true, markerPreserved: false };
       }
 
       const goal: GoalState = { last: prepared.lastGoal, known: prepared.goalKnown };
@@ -912,10 +923,12 @@ export class DshRunner implements AgentRunner {
             outcome.kind === 'quiescence-quiet' ||
             outcome.kind === 'quiescence-after' ||
             outcome.kind === 'goal-complete',
+          markerPreserved: false,
         };
       }
-      return { promptRequestId, terminalEmitted: false };
+      return { promptRequestId, terminalEmitted: false, markerPreserved: false };
     } catch (err) {
+      promptRequestId = submittedPromptRequestId ?? promptRequestId;
       if (!abort.signal.aborted) {
         yield {
           type: 'result',
@@ -923,9 +936,9 @@ export class DshRunner implements AgentRunner {
           session_id: sessionId,
           errorMessage: `DSH run failed: ${(err as Error).message}`,
         };
-        return { promptRequestId, terminalEmitted: true };
+        return { promptRequestId, terminalEmitted: true, markerPreserved: !!promptRequestId };
       }
-      return { promptRequestId, terminalEmitted: false };
+      return { promptRequestId, terminalEmitted: false, markerPreserved: false };
     }
   }
 
@@ -1037,6 +1050,7 @@ export class DshRunner implements AgentRunner {
     abort: AbortController,
     sessionId: string | null | undefined,
     promptRequestId: string | null,
+    markerPreserved = false,
   ): void {
     this.running = false;
     this.activeSessionId = null;
@@ -1046,7 +1060,7 @@ export class DshRunner implements AgentRunner {
     // On abort the stop path decides whether the marker is settled (verified
     // stop) or must survive for startup reconciliation (cancel failed). A
     // naturally finished run owns its terminal result, so drop it here.
-    if (!abort.signal.aborted && sessionId && promptRequestId) {
+    if (!abort.signal.aborted && !markerPreserved && sessionId && promptRequestId) {
       this.inflight?.clear(sessionId, promptRequestId);
     }
   }
@@ -1987,7 +2001,12 @@ export class DshRunner implements AgentRunner {
         //（耗 token、改工作区，卡片不可见），启动对账安全网也被解除）。
         // closed 后补一次撤回：在 inbox 就撤走，确认不在才清标记。
         if (promptRequestId) {
-          await this.withdrawPendingPromptAfterCancel(sessionId, promptRequestId, deadline);
+          await this.withdrawPendingPromptAfterCancel(
+            sessionId,
+            promptRequestId,
+            promptAdmitted,
+            deadline,
+          );
         }
         getLogger().info(`[dsh] cancelled session ${sessionId}`);
         return { status: 'cancelled', sessionId };
@@ -2006,7 +2025,12 @@ export class DshRunner implements AgentRunner {
       releaseGate();
       if (retryState === 'closed') {
         if (promptRequestId) {
-          await this.withdrawPendingPromptAfterCancel(sessionId, promptRequestId, deadline);
+          await this.withdrawPendingPromptAfterCancel(
+            sessionId,
+            promptRequestId,
+            promptAdmitted,
+            deadline,
+          );
         }
         return { status: 'cancelled', sessionId };
       }
@@ -2168,6 +2192,7 @@ export class DshRunner implements AgentRunner {
   private async withdrawPendingPromptAfterCancel(
     sessionId: string,
     promptRequestId: string,
+    promptAdmitted: boolean,
     deadline: number,
   ): Promise<void> {
     try {
@@ -2186,7 +2211,7 @@ export class DshRunner implements AgentRunner {
         }
         return;
       }
-      this.inflight?.clear(sessionId, promptRequestId);
+      if (promptAdmitted) this.inflight?.clear(sessionId, promptRequestId);
     } catch (err) {
       getLogger().warn(
         `[dsh] post-cancel withdraw probe failed session=${sessionId}: ${(err as Error).message}`,

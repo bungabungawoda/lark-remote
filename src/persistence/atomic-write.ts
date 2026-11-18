@@ -3,6 +3,69 @@ import path from 'node:path';
 import { bestEffortUnlink, withBusyRetry } from '../common/fs.js';
 import { getLogger } from '../logger/index.js';
 
+function uniqueSiblingPath(targetPath: string, kind: 'tmp' | 'copy'): string {
+  return path.join(
+    path.dirname(targetPath),
+    `.${path.basename(targetPath)}.${kind}-${process.pid}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`,
+  );
+}
+
+function syncFile(pathToSync: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(pathToSync, 'r');
+    fs.fsyncSync(fd);
+  } catch {
+    /* fsync is best-effort; some filesystems do not support it. */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* closing after a successful fsync is cleanup-only */
+      }
+    }
+  }
+}
+
+function syncDirectory(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch {
+    /* Directory fsync is best-effort and unsupported on some platforms. */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore close failure */
+      }
+    }
+  }
+}
+
+/**
+ * Move across filesystems without ever writing directly to the target:
+ * copy to a sibling, sync its data, then atomically rename it into place.
+ */
+function moveAcrossDevices(srcPath: string, destPath: string): void {
+  const destDir = path.dirname(destPath);
+  fs.mkdirSync(destDir, { recursive: true });
+  const siblingPath = uniqueSiblingPath(destPath, 'copy');
+  try {
+    fs.copyFileSync(srcPath, siblingPath);
+    syncFile(siblingPath);
+    withBusyRetry(() => fs.renameSync(siblingPath, destPath));
+    syncDirectory(destDir);
+  } finally {
+    bestEffortUnlink(siblingPath);
+  }
+}
+
 /**
  * Atomically write content (string or binary Buffer) to a file via tmp + rename.
  * Falls back to copy+unlink when rename fails with EXDEV (cross-device).
@@ -60,8 +123,7 @@ export function atomicWrite(
     });
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
-      // Cross-device rename: copy then unlink (tmp cleanup handled by finally)
-      fs.copyFileSync(tmpPath, filePath);
+      moveAcrossDevices(tmpPath, filePath);
     } else {
       throw err;
     }
@@ -94,7 +156,7 @@ export function atomicMoveFile(srcPath: string, destPath: string): void {
     withBusyRetry(() => fs.renameSync(srcPath, destPath));
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
-      fs.copyFileSync(srcPath, destPath);
+      moveAcrossDevices(srcPath, destPath);
       bestEffortUnlink(srcPath);
     } else {
       throw err;

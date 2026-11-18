@@ -233,6 +233,8 @@ export class QueueManager {
    * before begin); `removeFromQueue` therefore needs no cleanup here.
    */
   private beganMessageIds = new Set<string>();
+  /** Promises for work committed to a queue and not settled yet. */
+  private committedWork = new Set<Promise<void>>();
 
   /** Callback to check if cwd has an active run */
   private isWorkspaceRunning: (cwd: string) => boolean;
@@ -261,11 +263,11 @@ export class QueueManager {
    * （promise 链拼接与 settle 记账）。红线：链的拼接必须同步完成，
    * 中途不得 await（否则两条入队会乱序）。
    */
-  enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
+  enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): Promise<void> {
     // Guard: reject non-function tasks that would poison the queue chain
     if (typeof task !== 'function') {
       getLogger().warn('[queue-manager] enqueue ignored task is not a function, cwd=', cwd);
-      return;
+      return Promise.resolve();
     }
 
     // Mint a unique slot id for this task's execution period (regardless of
@@ -275,7 +277,7 @@ export class QueueManager {
     const slotId = ++this.slotCounter;
 
     const taskMeta = opts?.taskMeta;
-    if (taskMeta && !this.registerQueuedTask(cwd, taskMeta)) return;
+    if (taskMeta && !this.registerQueuedTask(cwd, taskMeta)) return Promise.resolve();
 
     // Get or create the queue for this cwd
     let queue = this.queues.get(cwd);
@@ -304,6 +306,23 @@ export class QueueManager {
         this.decrementExecutingCount(cwd, slotId);
       });
     this.queues.set(cwd, newQueue);
+    return this.registerCommittedWork(newQueue);
+  }
+
+  private registerCommittedWork(promise: Promise<void>): Promise<void> {
+    const completion = promise.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.committedWork.add(completion);
+    void completion.finally(() => {
+      this.committedWork.delete(completion);
+    });
+    return completion;
+  }
+
+  async waitForCommittedWork(): Promise<void> {
+    await Promise.all([...this.committedWork]);
   }
 
   /**
@@ -1039,10 +1058,29 @@ export class QueueManager {
       getLogger().debug(
         `[queue-manager] skip decrement (interrupted slot) cwd=${cwd} slot=${slotId}`,
       );
+      this.cleanupLaneIfDrained(cwd);
       return;
     }
     const count = this.pendingOrExecutingCount.get(cwd) ?? 1;
     this.pendingOrExecutingCount.set(cwd, Math.max(0, count - 1));
+    this.cleanupLaneIfDrained(cwd);
+  }
+
+  private cleanupLaneIfDrained(cwd: string): void {
+    if (this.isWorkspaceRunning(cwd)) return;
+    if (this.executingInfo.get(cwd)?.slotId !== undefined) return;
+    if ((this.pendingOrExecutingCount.get(cwd) ?? 0) !== 0) return;
+    if ((this.queuedTasks.get(cwd)?.length ?? 0) !== 0) return;
+    if (this.taskReplacements.get(cwd)?.size) return;
+    if (this.taskRunHolds.get(cwd)?.size) return;
+    this.queues.delete(cwd);
+    this.queuedTasks.delete(cwd);
+    this.pendingOrExecutingCount.delete(cwd);
+    this.executingInfo.delete(cwd);
+    this.interruptedSlots.delete(cwd);
+    this.taskReplacements.delete(cwd);
+    this.taskRunHolds.delete(cwd);
+    getLogger().debug(`[queue-manager] lane drained and cleaned cwd=${cwd}`);
   }
 
   /**

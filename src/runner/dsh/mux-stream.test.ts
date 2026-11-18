@@ -162,6 +162,38 @@ describe('openMuxStream / describeSocketError (characterization)', () => {
     });
   });
 
+  it('fails and closes the socket when the frame backlog exceeds the high-water mark', async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const gen = openMuxStream(opts(socket, controller.signal));
+    const next = gen.next();
+
+    await tick();
+    socket.fireOpen();
+    const openFrame = JSON.parse(socket.sent[0]) as { streamId: string };
+    const sendFrame = (index: number): void => {
+      socket.fireMessage(
+        JSON.stringify({ type: 'item', streamId: openFrame.streamId, value: { index } }),
+      );
+    };
+
+    let delivered = 0;
+    while (!socket.closed && delivered <= 1025) {
+      sendFrame(delivered);
+      delivered += 1;
+    }
+    expect(delivered).toBe(1026);
+    expect(socket.closed).toBe(true);
+
+    expect(await next).toEqual({ value: { index: 0 }, done: false });
+    await expect(gen.next()).rejects.toMatchObject({
+      code: 'transport',
+      message: 'DSH remote mux WebSocket backlog exceeded',
+    });
+    expect(socket.closed).toBe(true);
+    await expect(gen.next()).resolves.toEqual({ value: undefined, done: true });
+  });
+
   it('unexpected HTTP response rejects with an http DshError carrying status', async () => {
     const socket = new FakeSocket();
     const controller = new AbortController();

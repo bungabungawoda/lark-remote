@@ -28,7 +28,7 @@ import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
 import { formatTokenK, formatUsageStats } from './usage-format.js';
-import { renderApprovalArea, renderApprovalAreaCompact } from './approval-render.js';
+import { mkNonce, renderApprovalArea, renderApprovalAreaCompact } from './approval-render.js';
 
 const REASONING_BYTES = 4_500;
 const TEXT_BYTES = 10_000;
@@ -1105,7 +1105,29 @@ function renderTimelineRunCard(state: RunState, options: RunCardRenderOptions): 
       ],
     },
   };
-  return truncatedSkeleton;
+  if (withinRunCardBudget(truncatedSkeleton)) {
+    return truncatedSkeleton;
+  }
+
+  const firstApproval = state.approvals?.find((approval) => !approval.expired);
+  return assembleRunCard(state, options, [
+    statusRow(state),
+    markdownDiv('_⚠️ 输入过大，已显示最小操作卡_'),
+    markdownDiv('✋ **等待审批**（完整内容请查终端 / Web UI）'),
+    ...(firstApproval
+      ? [
+          cardButton('❌ 拒绝', {
+            cmd: 'approval.respond',
+            decision: 'decline',
+            requestId: firstApproval.view.requestId,
+            runId: state.runId,
+            nonce: mkNonce(),
+          }),
+        ]
+      : []),
+    ...(isRunActive(state.terminal) ? [stopButton(state.runId)] : []),
+    newSessionButton(),
+  ]);
 }
 
 /** Exact-match marker: the body is delivered as an attached Markdown file. */

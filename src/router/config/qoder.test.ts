@@ -50,8 +50,26 @@ describe('QoderConfigBuilder', () => {
       const fields = builder.buildFields(makeConfig());
       const modelField = fields.find((f) => f.key === 'agents.qoder.model');
       expect(modelField!.type).toBe('select');
-      expect(modelField!.options).toEqual(['qfmodel', 'lite']);
+      expect(modelField!.options).toEqual([
+        { value: 'qfmodel', text: 'qfmodel' },
+        { value: 'lite', text: 'lite' },
+      ]);
       expect(modelField!.currentValue).toBe('qfmodel');
+    });
+
+    it('model keeps a configured model missing from the probe list selectable', () => {
+      vi.mocked(loadQoderConfig).mockReturnValue({
+        ...baseQoderCfg,
+        modelOptions: ['lite'],
+      });
+      const fields = builder.buildFields(makeConfig({ agents: { qoder: { model: 'legacy' } } }));
+      const modelField = fields.find((f) => f.key === 'agents.qoder.model');
+      expect(modelField!.type).toBe('select');
+      expect(modelField!.options).toEqual([
+        { value: 'lite', text: 'lite' },
+        { value: 'legacy', text: 'legacy（现配置，不在探测清单）' },
+      ]);
+      expect(modelField!.currentValue).toBe('legacy');
     });
 
     it('reasoning effort falls back to a text input when the probe yields no levels', () => {

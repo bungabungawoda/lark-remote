@@ -90,12 +90,17 @@ describe('BashProcessRunner — 输出背压水位', () => {
       this.resumeCalls++;
       return this;
     }
-    pushChunk(text: string): void {
-      this.emit('data', Buffer.from(text, 'utf-8'));
+    pushChunk(chunk: string | Buffer): void {
+      this.emit('data', Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf-8'));
     }
   }
 
-  function makeRunner(): { runner: BashProcessRunner; stdout: FakeStream; stderr: FakeStream } {
+  function makeRunner(): {
+    runner: BashProcessRunner;
+    stdout: FakeStream;
+    stderr: FakeStream;
+    proc: EventEmitter;
+  } {
     const stdout = new FakeStream();
     const stderr = new FakeStream();
     const proc = Object.assign(new EventEmitter(), {
@@ -123,6 +128,7 @@ describe('BashProcessRunner — 输出背压水位', () => {
       }),
       stdout,
       stderr,
+      proc,
     };
   }
 
@@ -195,6 +201,35 @@ describe('BashProcessRunner — 输出背压水位', () => {
     expect(stderr.pauseCalls).toBe(2); // 放行之后仍要能再停
 
     await it.return(undefined);
+  });
+
+  it('reassembles multibyte stdout and stderr across data chunks', async () => {
+    const { runner, stdout, stderr, proc } = makeRunner();
+    const it = started(runner);
+    const first = it.next();
+    const stdoutText = '汉😀stdout';
+    const stderrText = '汉😀stderr';
+    const stdoutBytes = Buffer.from(stdoutText, 'utf8');
+    const stderrBytes = Buffer.from(stderrText, 'utf8');
+    const stdoutCut = stdoutBytes.indexOf(0xe6);
+    const stderrCut = stderrBytes.indexOf(0xe6);
+
+    stdout.pushChunk(stdoutBytes.subarray(0, stdoutCut + 1));
+    stderr.pushChunk(stderrBytes.subarray(0, stderrCut + 1));
+    stdout.pushChunk(stdoutBytes.subarray(stdoutCut + 1));
+    stderr.pushChunk(stderrBytes.subarray(stderrCut + 1));
+    proc.emit('exit', 0, null);
+
+    const events: Array<{ type: string; content: string }> = [];
+    let next = await first;
+    while (!next.done) {
+      events.push(next.value as { type: string; content: string });
+      next = await it.next();
+    }
+
+    expect(events.filter((event) => event.type === 'stdout')[0]?.content).toBe(stdoutText);
+    expect(events.filter((event) => event.type === 'stderr')[0]?.content).toBe(stderrText);
+    expect(events.map((event) => event.content).join('')).not.toContain('\uFFFD');
   });
 });
 

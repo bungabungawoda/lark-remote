@@ -708,6 +708,7 @@ export class CommandRouter {
         // 后台渲染队列里的兄弟卡 PATCH 同样是未完成的工作：直接退出会让其它
         // 配置卡停在旧草稿上。给一个短预算，网络慢就不等（进程要能退出去）。
         await Promise.race([this.flushConfigRender(), sleepUnref(CONFIG_EXIT_FLUSH_BUDGET_MS)]);
+        await this.bridge.waitForQueuedWork();
         this.exitHandler();
       }
       return result;
@@ -786,6 +787,7 @@ export class CommandRouter {
     }
     if (this.pendingExit) {
       await this.flushInbound?.();
+      await this.bridge.waitForQueuedWork();
       this.exitHandler();
     }
   }

@@ -45,9 +45,11 @@ function hugeVirtualReader(total: number) {
 
 describe('/resume pagination', () => {
   let tmpDir: string;
+  let cwd: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-pagination-'));
+    cwd = fs.realpathSync(tmpDir);
   });
 
   afterEach(() => {
@@ -79,7 +81,7 @@ describe('/resume pagination', () => {
     //    place with the first page. NaN slice would produce an empty page and
     //    a text fallback instead of the card.
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 'abc', pageSize: 5 } as never,
+      { cmd: 'resume.page', agent: 'claude', offset: 'abc', pageSize: 5, cwd } as never,
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(1);
@@ -88,7 +90,7 @@ describe('/resume pagination', () => {
     // 2. Numeric offset 25 (total=25, pageSize=5) aligns to the last page
     //    start 20: page label must be 第 5/5 页 (never 第 6/5 页 or misaligned).
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 25, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 25, pageSize: 5, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(2);
@@ -100,6 +102,7 @@ describe('/resume pagination', () => {
     const d25 = path.join(tmpDir, 'd25');
     const d5 = path.join(tmpDir, 'd5');
     fs.mkdirSync(d25, { recursive: true });
+    const d25Cwd = fs.realpathSync(d25);
     fs.mkdirSync(d5, { recursive: true });
     const h25 = buildResumeHarness(d25, path.join(d25, 'claude-projects'), 25);
 
@@ -109,7 +112,7 @@ describe('/resume pagination', () => {
     const els1 = flattenElements(card1);
     expect(findDivWithText(els1, '第 1/5 页 · 共 25 个会话')).toBeDefined();
     expect(resumePageButtons(els1).map((b) => b.behaviors![0].value)).toEqual([
-      { cmd: 'resume.page', agent: 'claude', offset: 5, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 5, pageSize: 5, cwd: d25Cwd },
     ]);
     expect(resumePageButtons(els1).some((b) => b.behaviors![0].value?.offset === 0)).toBe(false);
     expectNoV1ActionContainer(card1);
@@ -121,7 +124,7 @@ describe('/resume pagination', () => {
     const els2 = flattenElements(card2);
     expect(findDivWithText(els2, '第 1/9 页 · 共 25 个会话')).toBeDefined();
     expect(resumePageButtons(els2).map((b) => b.behaviors![0].value)).toEqual([
-      { cmd: 'resume.page', agent: 'claude', offset: 3, pageSize: 3 },
+      { cmd: 'resume.page', agent: 'claude', offset: 3, pageSize: 3, cwd: d25Cwd },
     ]);
 
     // 5 sessions <= pageSize 5 → no pagination bar at all
@@ -143,7 +146,7 @@ describe('/resume pagination', () => {
 
     // 2. Click 下一页 (offset 5): updateCardInPlace, same message bubble
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 5, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 5, pageSize: 5, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(1);
@@ -159,13 +162,13 @@ describe('/resume pagination', () => {
     const page2Buttons = resumePageButtons(page2Els);
     expect(page2Buttons).toHaveLength(2);
     expect(page2Buttons.map((b) => b.behaviors![0].value)).toEqual([
-      { cmd: 'resume.page', agent: 'claude', offset: 0, pageSize: 5 },
-      { cmd: 'resume.page', agent: 'claude', offset: 10, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 0, pageSize: 5, cwd },
+      { cmd: 'resume.page', agent: 'claude', offset: 10, pageSize: 5, cwd },
     ]);
 
     // 3. Out-of-range offset (1000) clamps to the last page (offset 20)
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 1000, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 1000, pageSize: 5, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(2);
@@ -176,7 +179,7 @@ describe('/resume pagination', () => {
     );
 
     // 4. Missing agent field → defaultAgent ('claude') fallback, flips back to page 1
-    await h.router.handleCardAction({ cmd: 'resume.page', offset: 0, pageSize: 5 }, h.ctx);
+    await h.router.handleCardAction({ cmd: 'resume.page', offset: 0, pageSize: 5, cwd }, h.ctx);
     expect(h.connector._updates).toHaveLength(3);
     const homeAgainEls = flattenElements(h.connector._updates[2].card as Card);
     expect(findDivWithText(homeAgainEls, '第 1/5 页 · 共 25 个会话')).toBeDefined();
@@ -202,7 +205,7 @@ describe('/resume pagination', () => {
     const h = buildResumeHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: -20, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: -20, pageSize: 5, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(1);
@@ -216,7 +219,7 @@ describe('/resume pagination', () => {
 
     const sentBefore = h.connector._sent.length;
     const resp = await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'pi', offset: 0, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'pi', offset: 0, pageSize: 5, cwd },
       h.ctx,
     );
     expect(resp?.toast?.type).toBe('error');
@@ -228,7 +231,7 @@ describe('/resume pagination', () => {
   it('test_anchor_resume_page_missing_agent_small_page_size', async () => {
     const h = buildResumeHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
-    await h.router.handleCardAction({ cmd: 'resume.page', offset: 0, pageSize: 5 }, h.ctx);
+    await h.router.handleCardAction({ cmd: 'resume.page', offset: 0, pageSize: 5, cwd }, h.ctx);
     expect(h.connector._updates).toHaveLength(1);
     const els = flattenElements(h.connector._updates[0].card as Card);
     expect(findDivWithText(els, '第 1/5 页 · 共 25 个会话')).toBeDefined();
@@ -242,7 +245,7 @@ describe('/resume pagination', () => {
     const els = flattenElements(h.cardOf(0));
     expect(findDivWithText(els, '第 1/9 页 · 共 25 个会话')).toBeDefined();
     expect(resumePageButtons(els).map((b) => b.behaviors![0].value)).toEqual([
-      { cmd: 'resume.page', agent: 'claude', offset: 3, pageSize: 3 },
+      { cmd: 'resume.page', agent: 'claude', offset: 3, pageSize: 3, cwd },
     ]);
   });
 
@@ -251,7 +254,7 @@ describe('/resume pagination', () => {
     const h = buildResumeHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 1000, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 1000, pageSize: 5, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(1);
@@ -264,6 +267,7 @@ describe('/resume pagination', () => {
       agent: 'claude',
       offset: 15,
       pageSize: 5,
+      cwd,
     });
   });
 
@@ -271,7 +275,7 @@ describe('/resume pagination', () => {
     const h = buildResumeHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 1000, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 1000, pageSize: 5, cwd },
       h.ctx,
     );
     const els = flattenElements(h.connector._updates[0].card as Card);
@@ -284,6 +288,7 @@ describe('/resume pagination', () => {
         agent: 'claude',
         offset: prevValue.offset,
         pageSize: prevValue.pageSize,
+        cwd,
       },
       h.ctx,
     );
@@ -296,7 +301,7 @@ describe('/resume pagination', () => {
     const h = buildResumeHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 0, pageSize: -5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 0, pageSize: -5, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(1);
@@ -309,7 +314,7 @@ describe('/resume pagination', () => {
     const h = buildResumeHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 0, pageSize: 0 },
+      { cmd: 'resume.page', agent: 'claude', offset: 0, pageSize: 0, cwd },
       h.ctx,
     );
     expect(h.connector._updates).toHaveLength(1);
@@ -330,10 +335,11 @@ describe('/resume pagination', () => {
       agent: 'claude',
       offset: 5,
       pageSize: 5,
+      cwd,
     });
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 5, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'claude', offset: 5, pageSize: 5, cwd },
       h.ctx,
     );
     const page2Els = flattenElements(h.connector._updates[0].card as Card);
@@ -355,10 +361,11 @@ describe('/resume pagination', () => {
       agent: 'codex',
       offset: 5,
       pageSize: 5,
+      cwd,
     });
 
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'codex', offset: 99995, pageSize: 5 },
+      { cmd: 'resume.page', agent: 'codex', offset: 99995, pageSize: 5, cwd },
       h.ctx,
     );
     const lastEls = flattenElements(h.connector._updates[0].card as Card);

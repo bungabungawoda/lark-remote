@@ -85,7 +85,11 @@ export class OrderStore {
   }
 
   save(text: string): OrderEntry {
-    if (text.length > MAX_TEXT_LENGTH) {
+    const trimmed = text.trim();
+    if (trimmed === '') {
+      throw new Error('指令文本不能为空');
+    }
+    if (trimmed.length > MAX_TEXT_LENGTH) {
       throw new Error(`指令文本超过 ${MAX_TEXT_LENGTH} 字符限制`);
     }
     if (this.data.length >= MAX_ORDERS) {
@@ -93,7 +97,7 @@ export class OrderStore {
     }
     const entry: OrderEntry = {
       id: crypto.randomUUID(),
-      text,
+      text: trimmed,
       createdAt: new Date().toISOString(),
     };
     this.data.push(entry);

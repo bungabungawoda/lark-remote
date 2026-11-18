@@ -154,6 +154,31 @@ describe('InboundTurnAssembler：图/文任意顺序等价', () => {
 });
 
 describe('InboundTurnAssembler：窗口与 in-flight 语义', () => {
+  it('两个媒体消息的附件按到达顺序提交，即使后到媒体先下载完成', async () => {
+    const h = makeAssembler();
+    const first = deferred<MediaOutcome>();
+    const second = deferred<MediaOutcome>();
+
+    h.assembler.ingest(textEvent('m-text', '按顺序处理图片'));
+    h.assembler.ingest(mediaEvent('m-first', first.promise));
+    h.assembler.ingest(mediaEvent('m-second', second.promise));
+    await vi.advanceTimersByTimeAsync(700);
+
+    second.resolve(
+      mediaOutcome([{ path: '/tmp/a/second.png', kind: 'image', sourceMsgId: 'm-second' }]),
+    );
+    first.resolve(
+      mediaOutcome([{ path: '/tmp/a/first.png', kind: 'image', sourceMsgId: 'm-first' }]),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].turn.attachments.map((attachment) => attachment.path)).toEqual([
+      '/tmp/a/first.png',
+      '/tmp/a/second.png',
+    ]);
+  });
+
   it('任何事件到达都重置静默期窗口', async () => {
     const h = makeAssembler();
     h.assembler.ingest(textEvent('m1', 'A'));

@@ -57,10 +57,14 @@ interface Bucket {
   replyToMessageId?: string;
   /** in-flight 下载数（>0 时禁止 commit）。 */
   pendingOutcomes: Set<Promise<void>>;
+  /** 媒体结果槽位：键是消息到达索引，保证按到达顺序而非下载完成顺序摊平。 */
+  mediaOutcomes: Map<number, MediaOutcome>;
   /** 窗口是否已到期（下载落定时据此判定能否立即 commit）。 */
   windowElapsed: boolean;
   /** flush 强制提交时记录的原因（下载落定后沿用）。 */
   forcedReason?: CommitReason;
+  /** 媒体事件到达序号，只在 ingest 的单一写入口递增。 */
+  nextMediaSequence: number;
   timer?: unknown;
   commitPromise?: Promise<void>;
   committed: boolean;
@@ -171,8 +175,10 @@ export class InboundTurnAssembler {
       rejected: [],
       messageIds: [],
       pendingOutcomes: new Set(),
+      mediaOutcomes: new Map(),
       windowElapsed: false,
       committed: false,
+      nextMediaSequence: 0,
     };
     this.buckets.set(key, bucket);
     return bucket;
@@ -206,11 +212,11 @@ export class InboundTurnAssembler {
     messageId: string,
     outcome: Promise<MediaOutcome>,
   ): void {
+    const sequence = bucket.nextMediaSequence++;
     const tracked: Promise<void> = Promise.resolve(outcome)
       .then(
         (result) => {
-          bucket.attachments.push(...result.attachments);
-          for (const item of result.rejected) this.pushRejected(bucket, item);
+          bucket.mediaOutcomes.set(sequence, result);
         },
         (err: unknown) => {
           this.pushRejected(bucket, {
@@ -222,6 +228,15 @@ export class InboundTurnAssembler {
       )
       .then(() => {
         bucket.pendingOutcomes.delete(tracked);
+        if (bucket.pendingOutcomes.size === 0) {
+          const ordered = [...bucket.mediaOutcomes.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([, result]) => result);
+          bucket.attachments = ordered.flatMap((result) => result.attachments);
+          for (const result of ordered) {
+            for (const item of result.rejected) this.pushRejected(bucket, item);
+          }
+        }
         if (bucket.windowElapsed && bucket.pendingOutcomes.size === 0 && !bucket.committed) {
           void this.tryCommit(key, bucket.forcedReason ?? 'idle');
         }

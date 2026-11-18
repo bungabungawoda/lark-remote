@@ -1508,15 +1508,40 @@ describe('CommandRouter', () => {
     );
     const { router, sessionStore } = createRouter({ projectsDir });
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    await router.handleCardAction({ cmd: 'resume.use', sessionId: 'real-session' }, ctx);
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'real-session', cwd: fs.realpathSync(tmpDir) },
+      ctx,
+    );
     expect(sessionStore.getSessionId('user1')).toBe('real-session');
   });
 
   it('/resume use card action does not set session id when session missing', async () => {
     const { router, sessionStore } = createRouter();
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    await router.handleCardAction({ cmd: 'resume.use', sessionId: 'sid-xyz' }, ctx);
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'sid-xyz', cwd: fs.realpathSync(tmpDir) },
+      ctx,
+    );
     // 校验失败不得污染 sessionStore（旧实现会写入幽灵 sessionId）
+    expect(sessionStore.getSessionId('user1')).toBeUndefined();
+  });
+
+  it('/resume use card action rejects a stale card cwd', async () => {
+    const projectsDir = path.join(tmpDir, 'claude-projects');
+    const projDir = path.join(projectsDir, encodedProjectDir(tmpDir));
+    fs.mkdirSync(projDir, { recursive: true });
+    writeSessionJsonl(
+      projDir,
+      'real-session',
+      tmpDir,
+      `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-06-19T10:00:00.000Z"}`,
+    );
+    const { router, sessionStore } = createRouter({ projectsDir });
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'real-session', cwd: '/tmp/stale-cwd' },
+      ctx,
+    );
     expect(sessionStore.getSessionId('user1')).toBeUndefined();
   });
 
@@ -1645,7 +1670,10 @@ describe('CommandRouter', () => {
 
     const { router, sessionStore, connector } = createRouter({ projectsDir });
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    await router.handleCardAction({ cmd: 'resume.use', sessionId: sid }, ctx);
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: sid, cwd: fs.realpathSync(tmpDir) },
+      ctx,
+    );
 
     // Should return a card with session content
     const input = connector._sent[0].input as {
@@ -1690,7 +1718,12 @@ describe('CommandRouter', () => {
 
     // Click resume.use button WITH agent:'codex' → should use codex reader
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+      {
+        cmd: 'resume.use',
+        sessionId: 'codex-session-1',
+        agent: 'codex',
+        cwd: fs.realpathSync(tmpDir),
+      },
       ctx,
     );
     expect(codexReadSpy).toHaveBeenCalled();
@@ -1715,7 +1748,10 @@ describe('CommandRouter', () => {
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     // Click resume.use WITHOUT agent → falls back to defaultAgent='claude' → not found
-    await router.handleCardAction({ cmd: 'resume.use', sessionId: 'codex-session-2' }, ctx);
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'codex-session-2', cwd: fs.realpathSync(tmpDir) },
+      ctx,
+    );
     // codex reader should NOT have been called (default agent is claude)
     expect(codexReadSpy).not.toHaveBeenCalled();
     // session should NOT be set (validation fails because claude reader has no such session)
@@ -1751,7 +1787,12 @@ describe('CommandRouter', () => {
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+      {
+        cmd: 'resume.use',
+        sessionId: 'codex-session-1',
+        agent: 'codex',
+        cwd: fs.realpathSync(tmpDir),
+      },
       ctx,
     );
     expect(JSON.stringify(connector._sent)).toContain('Context - 5K (3%)');
@@ -1861,7 +1902,12 @@ describe('CommandRouter', () => {
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handleCardAction(
-        { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+        {
+          cmd: 'resume.use',
+          sessionId: 'codex-session-1',
+          agent: 'codex',
+          cwd: fs.realpathSync(tmpDir),
+        },
         ctx,
       );
 
@@ -1926,7 +1972,12 @@ describe('CommandRouter', () => {
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handleCardAction(
-        { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+        {
+          cmd: 'resume.use',
+          sessionId: 'codex-session-1',
+          agent: 'codex',
+          cwd: fs.realpathSync(tmpDir),
+        },
         ctx,
       );
 
@@ -1947,7 +1998,12 @@ describe('CommandRouter', () => {
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handleCardAction(
-        { cmd: 'resume.use', sessionId: 'dsh-session-1', agent: 'dsh' },
+        {
+          cmd: 'resume.use',
+          sessionId: 'dsh-session-1',
+          agent: 'dsh',
+          cwd: fs.realpathSync(tmpDir),
+        },
         ctx,
       );
 
@@ -1996,7 +2052,12 @@ describe('CommandRouter', () => {
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handleCardAction(
-        { cmd: 'resume.use', sessionId: 'dsh-session-1', agent: 'dsh' },
+        {
+          cmd: 'resume.use',
+          sessionId: 'dsh-session-1',
+          agent: 'dsh',
+          cwd: fs.realpathSync(tmpDir),
+        },
         ctx,
       );
 
@@ -2017,7 +2078,12 @@ describe('CommandRouter', () => {
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handleCardAction(
-        { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+        {
+          cmd: 'resume.use',
+          sessionId: 'codex-session-1',
+          agent: 'codex',
+          cwd: fs.realpathSync(tmpDir),
+        },
         ctx,
       );
 
@@ -3774,6 +3840,60 @@ describe('CommandRouter', () => {
     await router.handle('/exit', ctx);
     expect((connector._sent[0].input as { text: string }).text).toContain('退出');
     expect(exited).toBe(true);
+  });
+
+  it('/exit waits for committed queued work before invoking the exit handler', async () => {
+    let workDone = false;
+    let exitBeforeWorkFinished = false;
+    const { router, bridge } = createRouter({
+      exitHandler: () => {
+        exitBeforeWorkFinished = !workDone;
+      },
+    });
+    let releaseWork!: () => void;
+    const workGate = new Promise<void>((resolve) => {
+      releaseWork = resolve;
+    });
+
+    bridge.enqueue(tmpDir, async () => {
+      await workGate;
+      workDone = true;
+    });
+    const exitPromise = router.handle('/exit', ctx);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(workDone).toBe(false);
+    releaseWork();
+    await exitPromise;
+    expect(workDone).toBe(true);
+    expect(exitBeforeWorkFinished).toBe(false);
+  });
+
+  it('help.exit card action waits for committed queued work before exiting', async () => {
+    let workDone = false;
+    let exitBeforeWorkFinished = false;
+    const { router, bridge } = createRouter({
+      exitHandler: () => {
+        exitBeforeWorkFinished = !workDone;
+      },
+    });
+    let releaseWork!: () => void;
+    const workGate = new Promise<void>((resolve) => {
+      releaseWork = resolve;
+    });
+
+    bridge.enqueue(tmpDir, async () => {
+      await workGate;
+      workDone = true;
+    });
+    const exitPromise = router.handleCardAction({ cmd: 'help.exit' }, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(workDone).toBe(false);
+    releaseWork();
+    await exitPromise;
+    expect(workDone).toBe(true);
+    expect(exitBeforeWorkFinished).toBe(false);
   });
 
   it('/exit 前冲刷后台渲染队列：待刷的兄弟卡不会随进程一起丢掉', async () => {

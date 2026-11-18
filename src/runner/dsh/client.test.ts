@@ -17,7 +17,7 @@ import {
   type WebSocketFactory,
   type WebSocketLike,
 } from './client.js';
-import { extractDshToken } from '../../dsh/protocol.js';
+import { dshArgs, extractDshToken } from '../../dsh/protocol.js';
 import { DSH_BROWSER_CREDENTIAL_KEY } from '../../dsh/auth.js';
 import { DshRunner } from './runner.js';
 import type { AgentSessionReader } from '../../session-contract.js';
@@ -29,6 +29,18 @@ const CWD = '/home/user/project';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 const NO_CREDENTIALS_FILE = '/nonexistent/lark-remote-test/.credentials.yaml';
 const tempDirs: string[] = [];
+
+it('passes DSH methods with wire-shaped payloads through unchanged', () => {
+  const payloads = {
+    'commands/execute': { agentId: SID, line: '/compact', submittedAttachments: [] },
+    '$events/result': { clientId: 'client-1', eventId: 'event-1', outcome: { kind: 'next' } },
+    'goals/get': { agentId: SID },
+  };
+
+  for (const [method, payload] of Object.entries(payloads)) {
+    expect(dshArgs(method, payload)).toBe(payload);
+  }
+});
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {

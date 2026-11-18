@@ -7,6 +7,7 @@ import {
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import type { Readable } from 'node:stream';
 import { bestEffortUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
@@ -336,8 +337,9 @@ export abstract class SpawningRunner {
     this.registerStopper(proc);
 
     this.spawnStderr = '';
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8').trim();
+    const stderrDecoder = new StringDecoder('utf8');
+    const appendStderr = (encoded: string): void => {
+      const text = encoded.trim();
       if (text) {
         this.spawnStderr = (this.spawnStderr + '\n' + text).trim().slice(-STDERR_TAIL_BYTES);
         // win32 command-not-found 嗅探：经 cmd 垫片启动失败不是 spawn 的
@@ -354,6 +356,12 @@ export abstract class SpawningRunner {
         // surfaced at error level in the non-zero-exit result path.
         getLogger().warn(`[${this.logTag} stderr] ${text}`);
       }
+    };
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      appendStderr(stderrDecoder.write(chunk));
+    });
+    proc.stderr?.once('end', () => {
+      appendStderr(stderrDecoder.end());
     });
 
     return proc;

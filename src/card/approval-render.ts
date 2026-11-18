@@ -14,7 +14,7 @@ import { countCardElements } from './card-budget.js';
 import { isRunActive, type RunTerminal } from './run-state.js';
 
 /** Unique nonce for card button callbacks (SDK dedup + router validation). */
-function mkNonce(): string {
+export function mkNonce(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 

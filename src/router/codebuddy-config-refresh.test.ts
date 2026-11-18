@@ -87,4 +87,32 @@ describe('/config 打开时的 CodeBuddy 目录刷新', () => {
 
     expect(refreshCodebuddyCatalogForConfig).not.toHaveBeenCalled();
   });
+
+  it('CodeBuddy 身份变更后切回 CodeBuddy 不恢复旧身份 session', async () => {
+    const { router, sessionStore } = makeRouter();
+    sessionStore.setCwd(ctx.userId, '/tmp/project');
+    sessionStore.setSessionIdAndSessionCwd(ctx.userId, 'codebuddy', 'old-identity', '/tmp/old');
+    sessionStore.setPreviousSessionId(ctx.userId, 'codebuddy', 'old-identity');
+    sessionStore.setArrivalSessionId(ctx.userId, 'codebuddy', 'old-identity');
+
+    await router.handleCardAction(
+      {
+        cmd: 'config.set',
+        key: 'agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT',
+        option: 'external',
+      },
+      ctx,
+    );
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'defaultAgent', option: 'codebuddy' },
+      ctx,
+    );
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    expect(sessionStore.getSessionId(ctx.userId, 'codebuddy')).toBeUndefined();
+    expect(sessionStore.getPreviousSessionId(ctx.userId, 'codebuddy')).toBeUndefined();
+    expect(sessionStore.getArrivalSessionId(ctx.userId, 'codebuddy')).toBeUndefined();
+    expect(sessionStore.getSessionCwd(ctx.userId, 'codebuddy')).toBeUndefined();
+    expect(sessionStore.getCwd(ctx.userId)).toBe('/tmp/project');
+  });
 });

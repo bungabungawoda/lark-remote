@@ -151,10 +151,12 @@ export class JsonlRpcTransport {
 
     // Stderr: rolling buffer, last 64KB retained, only log
     let stderrBuf = '';
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const appendStderr = (text: string): void => {
       stderrBuf = (stderrBuf + text).slice(-MAX_STDERR_BYTES);
-      getLogger().debug(`[jsonrpc-transport] stderr: ${text.trimEnd()}`);
+      if (text) {
+        getLogger().debug(`[jsonrpc-transport] stderr: ${text.trimEnd()}`);
+      }
       // win32 command-not-found 嗅探：命中只记嫌疑标记，不立即杀——
       // agent 正常输出可能引用该错误文本（调试 Windows 报错场景），见行即杀
       // 会误杀 run；定性由 onExit 的「标记 + 非零退出」双条件完成，真挂起由
@@ -165,6 +167,12 @@ export class JsonlRpcTransport {
           `[jsonrpc-transport] command not found suspected (win32 shim): ${text.trimEnd()}`,
         );
       }
+    };
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      appendStderr(stderrDecoder.write(chunk));
+    });
+    proc.stderr?.once('end', () => {
+      appendStderr(stderrDecoder.end());
     });
 
     // Stdout: line-split with 10MB line limit

@@ -158,7 +158,7 @@ function makeMockProc(
     exitCode: null,
     signalCode: null,
     stdout,
-    stderr: opts.stderr ?? { on: vi.fn(), destroy: vi.fn() },
+    stderr: opts.stderr ?? { on: vi.fn(), once: vi.fn(), destroy: vi.fn() },
     kill: vi.fn(),
     once: vi.fn(opts.close ?? (() => {})),
   });
@@ -300,6 +300,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
           cb(Buffer.from('T'.repeat(500)));
         }
       }),
+      once: vi.fn(),
       destroy: vi.fn(),
     };
 
@@ -322,6 +323,29 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
     await runner.cleanupSpawnSideEffects();
   });
 
+  it('test_anchor_spawning_runner_reassembles_stderr_multibyte_across_chunks', async () => {
+    const stderrReadable = new Readable({ read() {} });
+    const mockProc = makeMockProc({ pid: 33333, stderr: stderrReadable });
+    vi.mocked(spawn).mockReturnValue(mockProc);
+
+    const runner = new SpawnChildHarness({
+      binary: 'fake-binary',
+      pidDir: newPidDir(),
+    });
+    await runner.callSpawnChild({ cwd: '/tmp/r9' });
+
+    const text = '汉😀诊断';
+    const bytes = Buffer.from(text, 'utf8');
+    const cut = bytes.indexOf(0xe6);
+    stderrReadable.push(bytes.subarray(0, cut + 1));
+    stderrReadable.push(bytes.subarray(cut + 1));
+    stderrReadable.push(null);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(runner.testSpawnStderr).toBe(text);
+    await runner.cleanupSpawnSideEffects();
+  });
+
   it('test_anchor_spawning_runner_sniff_line_sets_command_not_found_seen', async () => {
     const { isWindowsCommandNotFoundLine } = await import('../../../src/platform/spawn.js');
     const sniffMock = vi.mocked(isWindowsCommandNotFoundLine);
@@ -333,6 +357,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
           cb(Buffer.from("'fake-binary' is not recognized as an internal or external command."));
         }
       }),
+      once: vi.fn(),
       destroy: vi.fn(),
     };
 

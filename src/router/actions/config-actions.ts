@@ -296,6 +296,18 @@ export function diffConfig(
 }
 
 /**
+ * Identity-bound sessions cannot be restored after an identity or service
+ * boundary changes. This clears current, previous, arrival, and per-agent cwd
+ * slots while preserving the user's main cwd.
+ */
+function invalidateAgentSessionState(host: CommandRouter, userId: string, agent: AgentKind): void {
+  host.sessionStore.clearSessionId(userId, agent, { clearSessionCwd: true });
+  host.sessionStore.clearPreviousSessionId(userId, agent);
+  host.sessionStore.setArrivalSessionId(userId, agent, '');
+  host.sessionStore.setSessionIdAndSessionCwd(userId, agent, '', '');
+}
+
+/**
  * config 写盘后的运行时传播（自 config.save 卡片路径抽出，卡片保存与
  * `/config <key> <value>` 文本直写两条路径共用）。
  *
@@ -338,11 +350,17 @@ export function propagateConfigSave(
   if (hasCodebuddyIdentityChange) {
     invalidateCodebuddyCatalogCache();
     invalidateCodebuddyRegion();
-    // 换区后旧 sessionId 属于另一个身份：留着会被 /restart 的
-    // restoreLastSession() auto-resume 回旧区域会话并重放 401。只清当前
-    // agent 的 session，cwd 保留（用户还在同一个工作目录）。
-    host.sessionStore.clearSessionId(ctx.userId, 'codebuddy');
+    // 换区后旧 sessionId 与恢复槽都属于另一个身份；切回 CodeBuddy 时
+    // 不得通过 previousSessions 自动复活旧身份会话。
+    invalidateAgentSessionState(host, ctx.userId, 'codebuddy');
     getLogger().info('[config] codebuddy identity changed, catalog/region/session invalidated');
+  }
+
+  const hasDshBoundaryChange =
+    changedKeys.includes('agents.dsh.agentPreset') || changedKeys.includes('agents.dsh.host');
+  if (hasDshBoundaryChange) {
+    // 边界失效必须先于 defaultAgent 切换，且不能因已有切换 notice 被跳过。
+    invalidateAgentSessionState(host, ctx.userId, 'dsh');
   }
 
   // 当 defaultAgent 改变时，清除旧 agent 的 sessionId，

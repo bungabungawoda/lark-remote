@@ -92,6 +92,7 @@ interface RowOptions {
   currentId: string;
   meta: ResumeMetaMap;
   now: number;
+  cwd: string;
 }
 
 function sessionPreviewLine(text: string, max: number): string {
@@ -281,8 +282,9 @@ function needsPreviewPrefetch(session: AgentSession, cheapSummary: boolean): boo
   return cheapSummary || !session.title;
 }
 
-function formatRelativeTime(mtimeMs: number, now: number): string {
+export function formatRelativeTime(mtimeMs: number, now: number): string {
   const diffSec = Math.floor((now - mtimeMs) / 1000);
+  if (diffSec < 0) return '时间异常（会话时间晚于当前时间）';
   if (diffSec < 60) return '刚刚';
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
@@ -365,11 +367,12 @@ function resumeRowElements(session: AgentSession, opts: RowOptions): object[] {
           tag: 'column',
           width: 'auto',
           elements: [
-            cardButton(
-              isCurrent ? '✓ 当前会话' : '恢复此会话',
-              { cmd: 'resume.use', sessionId: session.sessionId, agent: opts.agentKind },
-              { type: isCurrent ? 'default' : 'primary', disabled: isCurrent },
-            ),
+            cardButton(isCurrent ? '✓ 当前会话' : '恢复此会话', {
+              cmd: 'resume.use',
+              sessionId: session.sessionId,
+              agent: opts.agentKind,
+              cwd: opts.cwd,
+            }),
           ],
         },
       ],
@@ -400,7 +403,7 @@ function resumeListElements(
         offset: pageOffset,
         pageSize,
         total,
-        extra: { agent: opts.agentKind, pageSize },
+        extra: { agent: opts.agentKind, pageSize, cwd: opts.cwd },
         label: `第 ${currentPage}/${totalPages} 页 · 共 ${total} 个会话`,
       }),
     );
@@ -444,6 +447,7 @@ function resumeList(
     currentId: entry.sessions.get(agentKind) ?? '',
     meta,
     now: Date.now(),
+    cwd,
   });
 
   return {

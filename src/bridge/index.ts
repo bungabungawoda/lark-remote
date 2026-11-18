@@ -770,8 +770,13 @@ export class Bridge {
    * Enqueue a task into the workspace-level serial bridge queue.
    * Delegates to QueueManager for actual implementation.
    */
-  enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
-    this.queueManager.enqueue(cwd, task, opts);
+  enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): Promise<void> {
+    return this.queueManager.enqueue(cwd, task, opts);
+  }
+
+  /** Wait until all work already committed to the serial queues has settled. */
+  async waitForQueuedWork(): Promise<void> {
+    await this.queueManager.waitForCommittedWork();
   }
 
   /**

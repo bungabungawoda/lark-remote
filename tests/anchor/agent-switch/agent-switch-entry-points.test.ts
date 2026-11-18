@@ -168,7 +168,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
     sessionStore.setPreviousSessionId(userId, 'pi', 'pi-session-P');
 
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'codex-session-C2', agent: 'codex' },
+      { cmd: 'resume.use', sessionId: 'codex-session-C2', agent: 'codex', cwd: tmpDir },
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'codex')).toBe('codex-session-C2');
@@ -235,7 +235,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
     sessionStore.setArrivalSessionId(userId, 'codex', 'codex-session-C1');
 
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
+      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi', cwd: tmpDir },
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
@@ -270,7 +270,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
     sessionStore.setPreviousSessionId(userId, 'pi', 'pi-session-P');
 
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
+      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi', cwd: tmpDir },
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
@@ -306,7 +306,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
 
     // 先在 old（codex）制造用户活动：/resume 换到 `codex-session-C2`，arrival 不更新
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'codex-session-C2', agent: 'codex' },
+      { cmd: 'resume.use', sessionId: 'codex-session-C2', agent: 'codex', cwd: tmpDir },
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'codex')).toBe('codex-session-C2');
@@ -314,7 +314,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
 
     // 再对目标 agent（pi）显式选择
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
+      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi', cwd: tmpDir },
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
@@ -348,7 +348,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
     sessionStore.setArrivalSessionId(userId, 'codex', 'codex-session-C1');
 
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
+      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi', cwd: tmpDir },
       ctx,
     );
     await doSwitch(userId, ctx, 'pi');
@@ -383,7 +383,7 @@ describe('config.save switch vs startup/resume/cd entry points', () => {
     sessionStore.setPreviousSessionId(userId, 'pi', 'pi-session-P');
 
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
+      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi', cwd: tmpDir },
       ctx,
     );
     // /resume 与基线相同：sessions 无变化，不构成显式改选
@@ -672,7 +672,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
 
     // /resume 对非当前 agent pi 显式选择（arrival 不更新）
     await router.handleCardAction(
-      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
+      { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi', cwd: tmpDir },
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');

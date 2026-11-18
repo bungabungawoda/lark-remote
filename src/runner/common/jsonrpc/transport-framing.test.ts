@@ -57,6 +57,7 @@ interface Harness {
   closes: string[];
   child: FakeChild;
   push(chunk: Buffer): void;
+  pushStderr(chunk: Buffer): void;
   exit(): void;
 }
 
@@ -75,6 +76,7 @@ async function startTransport(onMessage?: (msg: unknown) => void): Promise<Harne
     closes,
     child,
     push: (chunk) => void child.stdout.emit('data', chunk),
+    pushStderr: (chunk) => void child.stderr.emit('data', chunk),
     exit: () => void child.emit('exit', 0, null),
   };
 }
@@ -168,5 +170,22 @@ describe('JsonlRpcTransport 分帧解码', () => {
     push(Buffer.from(`${JSON.stringify({ id: 1 })}\n${JSON.stringify({ id: 2 })}\n`, 'utf8'));
 
     expect(seen).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('stderr 跨 chunk 的多字节字符要拼回完整文本', async () => {
+    const text = '汉😀诊断';
+    const bytes = Buffer.from(text, 'utf8');
+    const cut = firstContinuationByte(bytes);
+    const { pushStderr } = await startTransport();
+
+    pushStderr(bytes.subarray(0, cut + 1));
+    pushStderr(bytes.subarray(cut + 1));
+
+    const stderrLogs = mockLogger.debug.mock.calls
+      .map((call) => String(call[0]))
+      .filter((message) => message.includes('[jsonrpc-transport] stderr:'));
+    expect(stderrLogs).toHaveLength(1);
+    expect(stderrLogs[0]).toContain(text);
+    expect(stderrLogs[0]).not.toContain('\uFFFD');
   });
 });

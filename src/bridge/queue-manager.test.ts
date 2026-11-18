@@ -804,3 +804,72 @@ describe('QueueManager waiting queue cap', () => {
     await new Promise((r) => setTimeout(r, 30));
   });
 });
+
+describe('QueueManager lane state lifecycle', () => {
+  it('clears historical cwd lane state after the queue drains', async () => {
+    const { qm } = makeQueueManager(() => false);
+    let releaseTask!: () => void;
+    const taskGate = new Promise<void>((resolve) => {
+      releaseTask = resolve;
+    });
+    qm.enqueue(tmpDir, () => taskGate, {
+      taskMeta: {
+        userId: 'u1',
+        chatId: 'c1',
+        messageId: 'task-1',
+        messagePreview: 'task 1',
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    qm.holdTaskRunStart(tmpDir, 'dead-task')();
+    const stoppedSlot = qm.getExecutingSlot(tmpDir)!;
+    qm.resetExecutingCount(tmpDir, stoppedSlot);
+
+    releaseTask();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const state = qm as unknown as {
+      queues: Map<string, Promise<void>>;
+      queuedTasks: Map<string, unknown[]>;
+      pendingOrExecutingCount: Map<string, number>;
+      executingInfo: Map<string, unknown>;
+      interruptedSlots: Map<string, Set<number>>;
+      taskReplacements: Map<string, Map<string, () => Promise<void>>>;
+      taskRunHolds: Map<string, Map<string, unknown>>;
+    };
+    expect(state.queues.has(tmpDir)).toBe(false);
+    expect(state.queuedTasks.has(tmpDir)).toBe(false);
+    expect(state.pendingOrExecutingCount.has(tmpDir)).toBe(false);
+    expect(state.executingInfo.has(tmpDir)).toBe(false);
+    expect(state.interruptedSlots.has(tmpDir)).toBe(false);
+    expect(state.taskReplacements.has(tmpDir)).toBe(false);
+    expect(state.taskRunHolds.has(tmpDir)).toBe(false);
+  });
+
+  it('keeps a historical cwd lane while its workspace still has an active run', async () => {
+    const { qm } = makeQueueManager(() => true);
+    qm.enqueue(tmpDir, async () => {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const state = qm as unknown as { queues: Map<string, Promise<void>> };
+    expect(state.queues.has(tmpDir)).toBe(true);
+  });
+
+  it('keeps a lane while a metadata-free task is still waiting in its queue', async () => {
+    const { qm } = makeQueueManager(() => false);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    qm.enqueue(tmpDir, () => firstGate);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    qm.enqueue(tmpDir, async () => {});
+
+    const state = qm as unknown as { queues: Map<string, Promise<void>> };
+    expect(state.queues.has(tmpDir)).toBe(true);
+
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.queues.has(tmpDir)).toBe(false);
+  });
+});

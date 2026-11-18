@@ -232,6 +232,8 @@
     "src/runner/qoder/**/*.test.ts",
     "src/session/qoder/**/*.test.ts",
     "src/config/qoder-config.test.ts",
-    "src/router/config/qoder.test.ts"
+    "src/router/config/qoder.test.ts",
+    "src/router/actions/queue-actions.test.ts",
+    "src/router/commands/resume.test.ts"
   ]
 }

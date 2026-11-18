@@ -249,7 +249,9 @@ export class CloneSession {
       },
       { replyTo: ctx.messageId },
     );
-    this.runRegistration(ctx);
+    if (this.state === 'awaiting_scan' && this.targetDir === targetDir && !this.abortController) {
+      this.runRegistration(ctx);
+    }
   }
 
   /**
@@ -324,7 +326,7 @@ export class CloneSession {
       signal: controller.signal,
       createOnly: true,
       onQRCodeReady: (info) => {
-        void this.sendQrCode(info, ctx);
+        void this.sendQrCode(info, ctx, controller);
       },
       onStatusChange: (info) => {
         if (info.status === 'domain_switched') {
@@ -354,7 +356,15 @@ export class CloneSession {
     );
   }
 
-  private async sendQrCode(info: QRCodeInfo, ctx: CloneContext): Promise<void> {
+  private async sendQrCode(
+    info: QRCodeInfo,
+    ctx: CloneContext,
+    controller: AbortController,
+  ): Promise<void> {
+    if (this.abortController !== controller || this.state !== 'awaiting_scan') {
+      getLogger().info('[clone] stale QR ready, ignored');
+      return;
+    }
     const qrPath = path.join(os.tmpdir(), `lark-remote-clone-qr-${crypto.randomUUID()}.gif`);
     const mins = Math.max(1, Math.round(info.expireIn / 60));
     try {
@@ -424,6 +434,7 @@ export class CloneSession {
       this.state = 'idle';
       return;
     }
+    let committed = false;
     try {
       const raw = fs.readFileSync(this.configPath, 'utf-8');
       const cloned = YAML.parse(raw) as Record<string, unknown>;
@@ -449,7 +460,13 @@ export class CloneSession {
         getLogger().warn('[clone] registerApp returned no user open_id; skip pre-bind');
       }
 
-      const spawnPid = this.spawnNewInstanceFn(targetDir);
+      committed = true;
+      let spawnPid: number | undefined;
+      try {
+        spawnPid = this.spawnNewInstanceFn(targetDir);
+      } catch (spawnErr) {
+        getLogger().warn('[clone] new instance spawn failed:', spawnErr);
+      }
       getLogger().info(`[clone] new instance spawn pid=${spawnPid ?? 'failed'}`);
 
       const lines = [
@@ -473,21 +490,43 @@ export class CloneSession {
       await this.connector.sendWithRetry(ctx.chatId, { text: lines.join('\n') });
       getLogger().info('[clone] finalized, flow exited');
     } catch (err) {
-      getLogger().error('[clone] finalize failed:', err);
-      this.cleanupPartialDir(targetDir);
+      if (!committed) {
+        getLogger().error('[clone] finalize failed:', err);
+        this.cleanupPartialDir(targetDir);
+        await this.connector
+          .sendWithRetry(
+            ctx.chatId,
+            {
+              text:
+                `⚠️ 分身配置写入失败：${(err as Error).message}\n` +
+                `新应用凭证（请妥善保管）：App ID ${result.client_id}\n` +
+                '可修复本机问题后用 /clone 重新走一遍流程（会创建新应用）',
+            },
+            { replyTo: ctx.messageId },
+          )
+          .catch((sendErr: unknown) =>
+            getLogger().warn('[clone] finalize failure notice send failed:', sendErr),
+          );
+        return;
+      }
+
+      // 配置、绑定与可迁移状态已完整落盘；拉起或回执失败只是启动降级。
+      // 绝不能回滚目录：新实例可能已经在运行，手动回滚会删除可用配置。
+      getLogger().warn('[clone] finalize post-commit failed:', err);
       await this.connector
         .sendWithRetry(
           ctx.chatId,
           {
             text:
-              `⚠️ 分身配置写入失败：${(err as Error).message}\n` +
-              `新应用凭证（请妥善保管）：App ID ${result.client_id}\n` +
-              '可修复本机问题后用 /clone 重新走一遍流程（会创建新应用）',
+              '⚠️ 分身配置已完成，但启动回执发送失败。\n' +
+              `• 配置目录：${targetDir}\n` +
+              '如新实例未收到启动通知，可手动启动：lark-remote --config-dir ' +
+              targetDir,
           },
           { replyTo: ctx.messageId },
         )
         .catch((sendErr: unknown) =>
-          getLogger().warn('[clone] finalize failure notice send failed:', sendErr),
+          getLogger().warn('[clone] post-commit notice send failed:', sendErr),
         );
     } finally {
       this.state = 'idle';

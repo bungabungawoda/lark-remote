@@ -3084,6 +3084,47 @@ describe('DshClient / DshRunner integration', () => {
     await iterator.return?.(undefined);
   });
 
+  it('stop during the pre-prompt fetch keeps the durable prompt identity', async () => {
+    server = new FakeDshServer();
+    let requestId = '';
+    server.setResponseDelayMs('session/prompt', 2000);
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running: false }] },
+    }));
+    server.setMuxFrames([]);
+    await server.start();
+
+    const inflightPath = path.join(makeTempDir('lark-remote-dsh-inflight-'), 'inflight.json');
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      inflightPath,
+    });
+    const iterator = runner.run('slow fetch', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    expect(
+      await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 5000),
+    ).toBe(true);
+    const prompt = server.requests.find((r) => r.method === 'session/prompt');
+    requestId = (prompt?.payload as { requestId?: string } | undefined)?.requestId ?? '';
+    expect(requestId).toMatch(/^lark-remote-/);
+    expect(await runner.stop({ immediate: true })).toMatchObject({ status: 'cancelled' });
+    await pending.catch(() => undefined);
+    const entries = new DshInflightStore(inflightPath).list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      sessionId: SID,
+      promptRequestId: requestId,
+      baseUrl: server.baseUrl,
+      cwd: CWD,
+    });
+    await iterator.return?.(undefined);
+  });
+
   /**
    * 验证什么：停止后本地 lane 立刻放行，但下一条 prompt 必须等 cancel 真正
    * 到达 Host 再发（否则 session 级 cancel 可能打在新 turn 上）。

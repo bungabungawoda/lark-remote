@@ -53,7 +53,7 @@ export class ConnectionLostError extends Error {
 
 /** Minimal shape of a pending request entry shared by JSON-line RPC clients. */
 interface RpcPendingEntry {
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
   reject: (err: Error) => void;
 }
 
@@ -63,7 +63,7 @@ export function rejectAllPending<K, V extends RpcPendingEntry>(
   err: Error,
 ): void {
   for (const entry of pending.values()) {
-    clearTimeout(entry.timer);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
     entry.reject(err);
   }
   pending.clear();
@@ -149,7 +149,7 @@ export class JsonRpcClient<InitializeResult = unknown> {
     {
       resolve: (value: unknown) => void;
       reject: (err: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
+      timer: ReturnType<typeof setTimeout> | undefined;
     }
   >();
   private nextId = 1;
@@ -250,19 +250,21 @@ export class JsonRpcClient<InitializeResult = unknown> {
     };
 
     return new Promise<R>((resolve, reject) => {
-      // Clamp to setTimeout's max: callers may pass Infinity for turn-scoped
-      // requests (session/prompt) — Infinity would fire immediately in Node.
+      // Infinity means the caller explicitly disabled the request timeout:
+      // do not create a timer — Node cannot represent Infinity in setTimeout.
       // 配置里的 `requestTimeoutMs: 0` = 不超时（同族 `turnIdleTimeoutMinutes`、
       // `claude.idleTtlMinutes` 都是「0 = 禁用」）。按 0 直接 setTimeout 会让
       // 每个请求在响应到达前抢先 reject，等于整个 agent 不可用。
       const budget =
         timeoutMs ??
         (this.requestTimeoutMs === 0 ? Number.POSITIVE_INFINITY : this.requestTimeoutMs);
-      const effectiveTimeout = Math.min(budget, 2_147_483_647);
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new RpcTimeoutError(`request timed out: ${method}`));
-      }, effectiveTimeout);
+      const timer =
+        budget === Number.POSITIVE_INFINITY
+          ? undefined
+          : setTimeout(() => {
+              this.pendingRequests.delete(id);
+              reject(new RpcTimeoutError(`request timed out: ${method}`));
+            }, budget);
 
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -330,7 +332,7 @@ export class JsonRpcClient<InitializeResult = unknown> {
       const id = message.id as string | number;
       const pending = this.pendingRequests.get(id);
       if (pending) {
-        clearTimeout(pending.timer);
+        if (pending.timer !== undefined) clearTimeout(pending.timer);
         this.pendingRequests.delete(id);
         pending.resolve(message.result);
       }
@@ -343,7 +345,7 @@ export class JsonRpcClient<InitializeResult = unknown> {
       const err = message.error as { code: number; message: string; data?: unknown };
       const pending = this.pendingRequests.get(id);
       if (pending) {
-        clearTimeout(pending.timer);
+        if (pending.timer !== undefined) clearTimeout(pending.timer);
         this.pendingRequests.delete(id);
         pending.reject(new RpcError(err.code, err.message, err.data));
       }

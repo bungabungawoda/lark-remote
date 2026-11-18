@@ -26,6 +26,7 @@ export async function handleResumeUse(
   // (both active and completed cards include the agent field).
   const resolvedAgent = resolveAgentKind(value.agent, host.config.defaultAgent);
 
+  const cardCwd = value.cwd;
   const entry = host.sessionStore.get(ctx.userId);
   const cwd = entry?.cwd;
   if (!cwd) {
@@ -39,6 +40,13 @@ export async function handleResumeUse(
   // 的已验证路径（:2352 校验通过才写入），sessionId 缺失直接报错。
   if (!value.sessionId) {
     await host.bridge.sendResult({ text: '缺少 sessionId，请重新从 /resume 列表选择会话' }, ctx);
+    return;
+  }
+  if (!cardCwd || cardCwd !== cwd) {
+    await host.bridge.sendResult(
+      { text: '卡片所属工作目录已变更，请重新在当前目录执行 /resume' },
+      ctx,
+    );
     return;
   }
   await host.bridge.sendResult(
@@ -73,6 +81,9 @@ export async function handleResumePage(
   const cwd = entry?.cwd;
   if (!cwd) {
     return { toast: { type: 'error', content: '请先 /cd 设置工作目录' } };
+  }
+  if (!value.cwd || value.cwd !== cwd) {
+    return { toast: { type: 'error', content: '卡片所属工作目录已变更，请重新执行 /resume' } };
   }
 
   // cmdResume clamps stale/out-of-range offsets and re-fetches internally.

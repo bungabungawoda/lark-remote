@@ -144,5 +144,19 @@ export function truncate(str: string, max: number, options?: TruncateOptions): s
 
 /** Char-level tail keep (used for store-time caps, e.g. bash output). */
 export function keepTail(value: string, maxChars: number): string {
-  return value.length <= maxChars ? value : value.slice(-maxChars);
+  if (value.length <= maxChars) return value;
+  let unitsToKeep = 0;
+  let codePoints = 0;
+  for (let index = value.length; index > 0 && codePoints < maxChars;) {
+    const codePointStart = index - 1;
+    if ((value.charCodeAt(codePointStart) & 0xfc00) === 0xdc00) {
+      if (codePointStart === 0) break;
+      index = codePointStart - 1;
+    } else {
+      index = codePointStart;
+    }
+    unitsToKeep = value.length - index;
+    codePoints++;
+  }
+  return value.slice(value.length - unitsToKeep);
 }

@@ -52,6 +52,8 @@ const SOCKET_ERROR_DETAIL_EXTRACTORS: ReadonlyArray<(e: SocketErrorLike) => stri
   typeDetail,
 ];
 
+const FRAME_QUEUE_HIGH_WATER_MARK = 1024;
+
 /**
  * onerror 的事件对象在 ws 实现之间形态不一（{message} / {error} / {type}）。
  * 尽力取出可读描述；取不到就不追加，别拿 '[object Object]' 充数。
@@ -78,6 +80,19 @@ export async function* openMuxStream(opts: OpenMuxStreamOptions): AsyncGenerator
   let ended = false;
   let failure: DshError | undefined;
   let opened = false;
+
+  const failTransport = (message: string): void => {
+    if (ended) return;
+    failure = new DshError('transport', message);
+    ended = true;
+    queue.length = 0;
+    settle(undefined);
+    try {
+      socket.close();
+    } catch {
+      /* ignore close error */
+    }
+  };
 
   const settle = (frame?: unknown): void => {
     if (waiter) {
@@ -144,6 +159,10 @@ export async function* openMuxStream(opts: OpenMuxStreamOptions): AsyncGenerator
     }
     if (message.streamId !== streamId) return;
     if (message.type === 'item' && message.value) {
+      if (queue.length >= FRAME_QUEUE_HIGH_WATER_MARK) {
+        failTransport('DSH remote mux WebSocket backlog exceeded');
+        return;
+      }
       settle(message.value);
       return;
     }

@@ -274,7 +274,7 @@ describe('/resume agent selection', () => {
     };
 
     await h.router.handleCardAction(
-      { cmd: 'resume.use', sessionId: piSessionId, agent: 'pi' },
+      { cmd: 'resume.use', sessionId: piSessionId, agent: 'pi', cwd: canonicalCwd },
       h.ctx,
     );
 

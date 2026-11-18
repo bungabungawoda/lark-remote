@@ -122,7 +122,10 @@ describe('resume.use 先写 sessionId 后校验 (anchor)', () => {
   it('probe: 校验通过的 session 仍写入 sessionId', async () => {
     const { router, sessionStore } = createRouter();
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    await router.handleCardAction({ cmd: 'resume.use', sessionId: 'real-s1' }, ctx);
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'real-s1', cwd: fs.realpathSync(tmpDir) },
+      ctx,
+    );
     expect(sessionStore.getSessionId('user1', 'claude')).toBe('real-s1');
   });
 });

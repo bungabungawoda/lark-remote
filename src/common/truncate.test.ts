@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  keepTail,
   truncate,
   truncateUtf8,
   truncateUtf8WithOmissionMarker,
@@ -67,6 +68,17 @@ describe('truncateUtf8', () => {
 
   it('returns the suffix when the byte budget cannot fit it', () => {
     expect(truncateUtf8('abc', 1)).toBe('…（已截断）');
+  });
+});
+
+describe('keepTail', () => {
+  it('keeps the last maxChars code points without splitting a surrogate pair', () => {
+    const input = 'a😀b';
+
+    expect(keepTail(input, 3)).toBe(input);
+    expect(keepTail(input, 2)).toBe('😀b');
+    expect(keepTail(input, 1)).toBe('b');
+    expect(JSON.stringify(keepTail(input, 2))).not.toContain('\\ud');
   });
 });
 

@@ -211,6 +211,33 @@ describe('setupMessageHandlers', () => {
     expect(h.router.handleCardAction).toHaveBeenCalledTimes(1);
   });
 
+  it('session-mutating card action waits when inbound media flush is slow', async () => {
+    const h = makeHarness();
+    let releaseDownload!: () => void;
+    h.connector.downloadInboundMedia.mockReturnValue(
+      new Promise((resolve) => {
+        releaseDownload = () => resolve({ media: [], failures: [] });
+      }) as never,
+    );
+
+    h.handlers.media?.(message('', 'm-media'));
+    h.handlers.message?.(message('old workspace message', 'm1'));
+    const response = await h.handlers.card?.(cardAction('config.save'));
+
+    expect(response).toEqual({
+      toast: { type: 'pending', content: '正在等待附件处理…' },
+    });
+    expect(h.router.handleCardAction).not.toHaveBeenCalled();
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(h.router.handleCardAction).not.toHaveBeenCalled();
+
+    releaseDownload();
+    await vi.waitFor(() =>
+      expect(h.order).toEqual(['enqueue:text', 'handle:old workspace message', 'card:config.save']),
+    );
+  });
+
   it('rejects non-owner media before download', () => {
     const h = makeHarness();
     h.binder.authorize.mockReturnValue({ kind: 'rejected' });

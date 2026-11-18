@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -178,6 +178,62 @@ describe('JsonRpcClient request/response id matching', () => {
     expect(result.ok).toBe(true);
 
     await client.dispose();
+  }, 10000);
+
+  it('treats Infinity request timeout as "no timeout"', async () => {
+    type CapturedRequest = { id: number | string; method: string };
+    const fakeTransport = {
+      closed: false,
+      events: undefined as undefined | { onMessage(msg: object): void },
+      requests: [] as CapturedRequest[],
+      async start(events: { onMessage(msg: object): void }) {
+        this.events = events;
+      },
+      write(message: object) {
+        const request = message as CapturedRequest;
+        this.requests.push(request);
+        if (request.method === 'initialize') {
+          this.respond(request.id, {
+            protocolVersion: 1,
+            agentInfo: { name: 'kimi-acp', version: '0.36.0' },
+          });
+        }
+      },
+      respondLast() {
+        const request = this.requests[this.requests.length - 1];
+        this.respond(request.id, { ok: true });
+      },
+      async close() {},
+      respond(id: number | string, result: unknown) {
+        this.events?.onMessage({ jsonrpc: '2.0', id, result });
+      },
+    };
+    const transport = fakeTransport as unknown as JsonlRpcTransport;
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: () => {},
+        onClose: () => {},
+      },
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
+
+    await client.connect();
+    vi.useFakeTimers();
+    const pending = client.request<unknown, { ok: boolean }>(
+      'session/new',
+      { cwd: tmpDir },
+      Number.POSITIVE_INFINITY,
+    );
+
+    await vi.advanceTimersByTimeAsync(2_147_483_648);
+    fakeTransport.respondLast();
+    const result = await pending;
+    expect(result.ok).toBe(true);
+
+    vi.useRealTimers();
   }, 10000);
 
   it('dispatches notifications to hooks', async () => {

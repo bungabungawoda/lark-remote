@@ -3,7 +3,8 @@ import type { AppConfig } from './config/index.js';
 import { getLogger } from './logger/index.js';
 import type { Bridge } from './bridge/index.js';
 import type { FeishuConnector } from './connector/index.js';
-import type { CommandRouter, CardActionPayload } from './router/index.js';
+import type { CardActionPayload, CommandRouter } from './router/index.js';
+import type { CardActionResponse } from './router/actions/shared.js';
 import {
   COMPACT_ACTION_CMDS,
   DIRECT_RETURN_CMDS,
@@ -38,6 +39,18 @@ import { stopCurrentTurn } from './bridge/stop-current.js';
  * 提速靠「回调链零网络写」拿到，不靠压这个预算。
  */
 const SESSION_MUTATING_FLUSH_BUDGET_MS = 1_000;
+const SESSION_MUTATING_PENDING_TOAST = {
+  toast: { type: 'pending', content: '正在等待附件处理…' },
+} as const;
+
+interface CardActionDispatchInput {
+  actionValue: CardActionPayload;
+  fullValue: ReturnType<typeof buildCardActionFullValue>;
+  userId: string;
+  chatId: string;
+  messageId: string;
+  cwd: string;
+}
 
 /**
  * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
@@ -297,7 +310,6 @@ async function handleCardAction(ctx: HandlerContext, action: CardActionEvent) {
     return;
   }
 
-  const isImmediate = isImmediateAction(actionValue.cmd);
   const cwd = ctx.sessionStore.getCwd(userId) ?? '';
   const fullValue = buildCardActionFullValue(actionValue, action);
 
@@ -305,25 +317,49 @@ async function handleCardAction(ctx: HandlerContext, action: CardActionEvent) {
     const flushP = ctx.assembler
       .flush(userId, chatId, 'flush')
       .catch((err: unknown) => ctx.logger.error('[control] inbound flush failed:', err));
-    await Promise.race([flushP, sleep(SESSION_MUTATING_FLUSH_BUDGET_MS)]);
+    const completed = await Promise.race([
+      flushP.then(() => true),
+      sleep(SESSION_MUTATING_FLUSH_BUDGET_MS).then(() => false),
+    ]);
+    if (!completed) {
+      void flushP
+        .then(() => {
+          return dispatchCardAction(ctx, {
+            actionValue,
+            fullValue,
+            userId,
+            chatId,
+            messageId,
+            cwd,
+          });
+        })
+        .catch((err: unknown) => ctx.logger.error('[control] delayed card action failed:', err));
+      return SESSION_MUTATING_PENDING_TOAST;
+    }
   }
 
+  return dispatchCardAction(ctx, { actionValue, fullValue, userId, chatId, messageId, cwd });
+}
+
+async function dispatchCardAction(
+  ctx: HandlerContext,
+  input: CardActionDispatchInput,
+): Promise<CardActionResponse | void> {
+  const { actionValue, fullValue, userId, chatId, messageId, cwd } = input;
   if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {
     const response = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
     return response;
   }
-
   if (actionValue.cmd === 'order.exec') {
-    void dispatchOrderExecForQueue({
+    await dispatchOrderExecForQueue({
       router: ctx.router,
       bridge: ctx.bridge,
       cwd,
       orderId: actionValue.orderId,
       ctx: { userId, chatId, messageId },
-    }).catch((err: unknown) => ctx.logger.error('[control] order.exec dispatch failed:', err));
+    });
     return;
   }
-
   const forwardActionFeedback = (res: unknown) => {
     const text = actionFeedbackText(res);
     if (!text) return;
@@ -331,18 +367,23 @@ async function handleCardAction(ctx: HandlerContext, action: CardActionEvent) {
       .sendResult({ text }, { userId, chatId, messageId })
       .catch((err: unknown) => ctx.logger.error('[control] card action feedback failed:', err));
   };
-
-  if (isImmediate) {
-    ctx.bridge.enqueueImmediate(cwd, async () => {
-      const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
-      forwardActionFeedback(res);
+  if (isImmediateAction(actionValue.cmd)) {
+    await new Promise<void>((resolve) => {
+      ctx.bridge.enqueueImmediate(cwd, async () => {
+        const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
+        forwardActionFeedback(res);
+        resolve();
+      });
     });
-  } else {
+    return;
+  }
+  await new Promise<void>((resolve) => {
     ctx.bridge.enqueue(
       cwd,
       async () => {
         const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
         forwardActionFeedback(res);
+        resolve();
       },
       {
         taskMeta: {
@@ -356,7 +397,7 @@ async function handleCardAction(ctx: HandlerContext, action: CardActionEvent) {
         },
       },
     );
-  }
+  });
 }
 
 export function setupMessageHandlers(deps: MessageHandlerDeps): void {

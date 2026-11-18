@@ -268,6 +268,27 @@ describe('CloneSession QR delivery', () => {
     expect(connector.texts.at(-1)).toContain('https://example.com/create-app');
     expect(session.currentState).toBe('awaiting_scan');
   });
+
+  it('stale QR callbacks are ignored after resend and after cancel', async () => {
+    const { connector, reg, session } = makeFixture();
+    await session.start(undefined, CTX);
+
+    await session.handleMessage('重发', CTX);
+    reg.calls[0].opts.onQRCodeReady({ url: 'https://example.com/stale', expireIn: 600 });
+    reg.calls[0].opts.onQRCodeReady({ url: 'https://example.com/stale', expireIn: 600 });
+    await flush();
+    expect(connector.imagePaths).toHaveLength(0);
+
+    reg.calls[1].opts.onQRCodeReady({ url: 'https://example.com/current', expireIn: 600 });
+    await flush();
+    expect(connector.imagePaths).toHaveLength(1);
+
+    await session.handleMessage('/Q', CTX);
+    reg.calls[1].opts.onQRCodeReady({ url: 'https://example.com/stale-current', expireIn: 600 });
+    await flush();
+    expect(connector.imagePaths).toHaveLength(1);
+    expect(session.currentState).toBe('idle');
+  });
 });
 
 describe('CloneSession.handleMessage', () => {
@@ -745,6 +766,69 @@ describe('CloneSession default detached spawn', () => {
 
     expect(spawnDetachedBridgeMock).not.toHaveBeenCalled();
     expect(connector.texts.at(-1)).toContain('新实例自动启动失败');
+  });
+});
+
+describe('CloneSession finalize commit boundary', () => {
+  it('keeps the completed clone and reports degraded start when spawn throws', async () => {
+    const connector = stubConnector();
+    const reg = makeDeferredRegisterApp();
+    const session = new CloneSession({
+      connector,
+      configPath,
+      configDir,
+      registerAppFn: reg.fn,
+      generateSuffix: () => 'spawnfail',
+      spawnNewInstance: () => {
+        throw new Error('log dir unavailable');
+      },
+    });
+
+    await session.start(undefined, CTX);
+    reg.calls[0].resolve({
+      client_id: 'cli_spawn_fail',
+      client_secret: 'spawn_secret',
+      user_info: { open_id: 'ou_spawn_fail' },
+    });
+    await flush();
+    await waitIdle(session);
+
+    const targetDir = `${configDir}-spawnfail`;
+    expect(fs.existsSync(path.join(targetDir, 'config.yaml'))).toBe(true);
+    expect(connector.texts.at(-1)).toContain('新实例自动启动失败');
+    expect(connector.texts.at(-1)).toContain(targetDir);
+    expect(connector.texts.at(-1)).not.toContain('配置写入失败');
+  });
+
+  it('does not clean the completed clone when the final receipt fails', async () => {
+    const connector = stubConnector();
+    connector.sendWithRetry = async () => {
+      if (connector.texts.length >= 1) throw new Error('receipt rejected');
+      connector.texts.push('started');
+      return 'message-1';
+    };
+    const reg = makeDeferredRegisterApp();
+    const session = new CloneSession({
+      connector,
+      configPath,
+      configDir,
+      registerAppFn: reg.fn,
+      generateSuffix: () => 'receiptfail',
+      spawnNewInstance: () => 4321,
+    });
+
+    await session.start(undefined, CTX);
+    reg.calls[0].resolve({
+      client_id: 'cli_receipt_fail',
+      client_secret: 'receipt_secret',
+      user_info: { open_id: 'ou_receipt_fail' },
+    });
+    await flush();
+    await waitIdle(session);
+
+    const targetDir = `${configDir}-receiptfail`;
+    expect(fs.existsSync(path.join(targetDir, 'config.yaml'))).toBe(true);
+    expect(session.currentState).toBe('idle');
   });
 });
 

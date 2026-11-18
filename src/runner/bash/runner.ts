@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { getLogger } from '../../logger/index.js';
 import {
   createShellBackend,
@@ -121,6 +122,8 @@ export class BashProcessRunner implements BashRunner {
     // for logging, one for queueing) -- both fired on the same chunk.
     const stdoutQueue: string[] = [];
     const stderrQueue: string[] = [];
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     // 背压状态（层④）：队列超高水位 → pause 对应流；drain 到低水位 → resume。
     let stdoutPaused = false;
     let stderrPaused = false;
@@ -161,19 +164,23 @@ export class BashProcessRunner implements BashRunner {
     };
 
     stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8');
+      const text = stdoutDecoder.write(chunk);
       getLogger().debug(`[bash-runner] stdout: ${text.slice(0, 100)}`);
-      stdoutQueue.push(text);
-      maybePauseStdout();
-      notifyData();
+      if (text) {
+        stdoutQueue.push(text);
+        maybePauseStdout();
+        notifyData();
+      }
     });
 
     stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8');
+      const text = stderrDecoder.write(chunk);
       getLogger().debug(`[bash-runner] stderr: ${text.slice(0, 100)}`);
-      stderrQueue.push(text);
-      maybePauseStderr();
-      notifyData();
+      if (text) {
+        stderrQueue.push(text);
+        maybePauseStderr();
+        notifyData();
+      }
     });
 
     // Use the `exit` event (not `close`): `close` waits for ALL child processes
@@ -236,6 +243,16 @@ export class BashProcessRunner implements BashRunner {
       }
 
       const { code, signal } = completionResult;
+      const stdoutTail = stdoutDecoder.end();
+      const stderrTail = stderrDecoder.end();
+      if (stdoutTail) stdoutQueue.push(stdoutTail);
+      if (stderrTail) stderrQueue.push(stderrTail);
+      while (stdoutQueue.length > 0) {
+        yield { type: 'stdout', content: stdoutQueue.shift()! };
+      }
+      while (stderrQueue.length > 0) {
+        yield { type: 'stderr', content: stderrQueue.shift()! };
+      }
       getLogger().info(`[bash-runner] process exited with code=${code} signal=${signal}`);
       // A SIGKILL'd process (e.g. from /stop) has exitCode=null and a signal
       // set. Reporting `code ?? 0` would falsely claim success; use -1 to

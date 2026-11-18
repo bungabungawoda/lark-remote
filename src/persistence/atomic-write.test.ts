@@ -95,23 +95,41 @@ describe('atomicWrite EXDEV fallback', () => {
     copyFileSpy?.mockRestore();
   });
 
-  it('falls back to copyFileSync when renameSync throws EXDEV', () => {
+  it('falls back to sibling copy, fsync, and rename when renameSync throws EXDEV', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-write-exdev-'));
     const filePath = path.join(dir, 'target.txt');
     const content = 'hello exdev';
 
-    renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-      const err = new Error('cross-device link') as NodeJS.ErrnoException;
-      err.code = 'EXDEV';
-      throw err;
+    const originalRename = fs.renameSync;
+    renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((...args) => {
+      if (String(args[0]).includes('.target.txt.tmp-')) {
+        const err = new Error('cross-device link') as NodeJS.ErrnoException;
+        err.code = 'EXDEV';
+        throw err;
+      }
+      return originalRename(...args);
     });
     copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+    const openSpy = vi.spyOn(fs, 'openSync');
 
     try {
       atomicWrite(filePath, content);
 
-      // copyFileSync was called as the EXDEV fallback
-      expect(copyFileSpy).toHaveBeenCalled();
+      expect(copyFileSpy).toHaveBeenCalledTimes(1);
+      expect(path.dirname(String(copyFileSpy.mock.calls[0]?.[0]))).toBe(dir);
+      expect(String(copyFileSpy.mock.calls[0]?.[1])).not.toBe(filePath);
+      expect(path.basename(String(copyFileSpy.mock.calls[0]?.[1]))).toMatch(
+        /^\.target\.txt\.copy-\d+-\d+-[a-z0-9]+$/,
+      );
+
+      expect(renameSpy).toHaveBeenCalledTimes(2);
+      expect(String(renameSpy.mock.calls[1]?.[1])).toBe(filePath);
+      expect(path.dirname(String(renameSpy.mock.calls[1]?.[0]))).toBe(dir);
+      expect(
+        openSpy.mock.calls.some(
+          ([openedPath]) => String(openedPath) === String(copyFileSpy.mock.calls[0]?.[1]),
+        ),
+      ).toBe(true);
 
       // Target file contains the correct content
       expect(fs.readFileSync(filePath, 'utf-8')).toBe(content);
@@ -119,6 +137,7 @@ describe('atomicWrite EXDEV fallback', () => {
       // Tmp file is cleaned up
       expect(tmpLeftovers(dir)).toEqual([]);
     } finally {
+      openSpy.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -167,21 +186,29 @@ describe('atomicMoveFile', () => {
     }
   });
 
-  it('falls back to copy + unlink when rename throws EXDEV', () => {
+  it('falls back to sibling copy, fsync, and rename when rename throws EXDEV', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-move-exdev-'));
     const src = path.join(dir, 'download.tmp');
     const dest = path.join(dir, 'image.png');
     fs.writeFileSync(src, 'PNG bytes');
-    renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-      const err = new Error('cross-device link') as NodeJS.ErrnoException;
-      err.code = 'EXDEV';
-      throw err;
+    const originalRename = fs.renameSync;
+    renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((...args) => {
+      if (String(args[0]).endsWith('download.tmp')) {
+        const err = new Error('cross-device link') as NodeJS.ErrnoException;
+        err.code = 'EXDEV';
+        throw err;
+      }
+      return originalRename(...args);
     });
     copyFileSpy = vi.spyOn(fs, 'copyFileSync');
     try {
       atomicMoveFile(src, dest);
       expect(fs.readFileSync(dest, 'utf-8')).toBe('PNG bytes');
       expect(fs.existsSync(src)).toBe(false);
+      expect(renameSpy).toHaveBeenCalledTimes(2);
+      expect(String(renameSpy.mock.calls[1]?.[1])).toBe(dest);
+      expect(String(copyFileSpy.mock.calls[0]?.[1])).not.toBe(dest);
+      expect(path.dirname(String(copyFileSpy.mock.calls[0]?.[1]))).toBe(dir);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

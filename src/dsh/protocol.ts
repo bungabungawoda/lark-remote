@@ -27,11 +27,12 @@ export function extractDshToken(raw: string | undefined): string {
 /**
  * Remote methods take named parameters. Most session methods call their single
  * argument `request`; `session/list` reserves `_request`; catalog methods take
- * no arguments. `commands/*` address the receiving agent by its wire field
- * `agentId`, so their payload is already in wire shape (pass-through).
+ * no arguments. `commands/execute`, `$events/result`, and `goals/get` receive
+ * wire-shaped payloads (for example `agentId`, `clientId`/`eventId`/`outcome`),
+ * so those payloads pass through unchanged.
  * The gateway rejects any other `args` shape.
  */
-const DSH_ARGS_KEY: Record<string, string | null> = {
+const DSH_ARGS_KEY: Record<string, string | null | true> = {
   'session/list': '_request',
   'session/create': 'request',
   'session/prompt': 'request',
@@ -46,11 +47,15 @@ const DSH_ARGS_KEY: Record<string, string | null> = {
   'session/modelCatalog': null,
   'agentPresets/list': null,
   'permissionPresets/catalog': null,
+  'commands/execute': true,
+  '$events/result': true,
+  'goals/get': true,
 };
 
 export function dshArgs(method: string, payload: unknown): Record<string, unknown> {
   const key = DSH_ARGS_KEY[method];
   if (key === null) return {};
+  if (key === true) return payload as Record<string, unknown>;
   if (key === undefined) return payload as Record<string, unknown>;
   return { [key]: payload };
 }

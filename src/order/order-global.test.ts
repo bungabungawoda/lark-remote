@@ -61,6 +61,13 @@ describe('OrderStore 全局存储（无 cwd 参数）', () => {
     expect(entries.map((e) => e.text)).toEqual(['指令 A', '指令 B', '指令 C']);
   });
 
+  it('save 拒绝纯空白文本，不占用数量上限', () => {
+    const store = new OrderStore(ordersFile);
+
+    expect(() => store.save('   ')).toThrow('指令文本不能为空');
+    expect(store.get()).toHaveLength(0);
+  });
+
   it('has(id) 只检查 id 存在性', () => {
     const store = new OrderStore(ordersFile);
 

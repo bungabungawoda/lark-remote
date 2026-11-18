@@ -42,7 +42,12 @@ function modelField(modelOptions: string[], configured: string): ConfigField {
     key: 'agents.qoder.model',
     label: '使用模型',
     type: 'select',
-    options: modelOptions,
+    options: [
+      ...modelOptions.map((value) => ({ value, text: value })),
+      ...(configured && !modelOptions.includes(configured)
+        ? [{ value: configured, text: `${configured}（现配置，不在探测清单）` }]
+        : []),
+    ],
     currentValue: configured,
   };
 }

@@ -95,7 +95,13 @@ describe('/resume list contents', () => {
 
     // 翻到第 4 页（offset=15，sessions 09..05，含 3 个占位符 session）。
     await h.router.handleCardAction(
-      { cmd: 'resume.page', agent: 'claude', offset: 15, pageSize: 5 },
+      {
+        cmd: 'resume.page',
+        agent: 'claude',
+        offset: 15,
+        pageSize: 5,
+        cwd: fs.realpathSync(tmpDir),
+      },
       h.ctx,
     );
     const card4 = h.connector._updates[0].card;

@@ -562,7 +562,7 @@ describe('anchor: queue diagnose card v2', () => {
     // (red): handleQueueDiagnose 的诊断卡片仍是 CardKit V1 结构
     // （缺 schema:'2.0'，缺 body:{elements}，顶层用 elements）。这是全项目最后一张
     // V1 卡。通过 handleCardAction 触发 queue.diagnose：handleQueueDiagnose 只读取
-    // bridge.getQueuedTask / getQueueInfo / getAllActiveRuns，然后用
+    // bridge.getQueuedTask / getQueueInfo / getAllActiveRuns / getActiveBashRuns，然后用
     // bridge.sendResult 发卡片。我们用一个伪造 bridge 满足这几个 seam，
     // 并捕获 sendResult 收到的诊断卡片做断言。
     const sentCards: object[] = [];
@@ -578,6 +578,7 @@ describe('anchor: queue diagnose card v2', () => {
       }),
       getQueueInfo: () => ({ position: 1, tasksAhead: 0, isRunning: true }),
       getAllActiveRuns: () => new Map(),
+      getActiveBashRuns: () => [],
     });
 
     const sessionStore = new SessionStore();

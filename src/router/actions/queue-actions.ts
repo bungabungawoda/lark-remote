@@ -306,6 +306,7 @@ export async function handleQueueDiagnose(
   const task = host.bridge.getQueuedTask(cwd, messageId);
   const queueInfo = host.bridge.getQueueInfo(cwd);
   const activeRuns = host.bridge.getAllActiveRuns();
+  const activeBashRuns = host.bridge.getActiveBashRuns();
   // 「排在当前任务之前」按诊断目标自己的位置算（与 sendQueueStatusCard 同法）。
   // getQueueInfo.tasksAhead 是队尾视角（len-1），诊断目标不是队尾时数字误导。
   const queuedTasks = host.bridge.getQueuedTasks(cwd);
@@ -353,7 +354,11 @@ export async function handleQueueDiagnose(
           tag: 'div',
           text: {
             tag: 'lark_md',
-            content: `**队列状态**\n- 排队的任务数: ${queueInfo.position}\n- 当前正在运行: ${queueInfo.isRunning ? '✅ 是' : '❌ 否'}\n- 排在当前任务之前的消息数: ${tasksAhead}`,
+            content:
+              `**队列状态**\n- 排队的任务数: ${queueInfo.position}\n` +
+              `- Agent 队列正在运行: ${queueInfo.isRunning ? '✅ 是' : '❌ 否'}\n` +
+              `- Bash 独立任务: ${activeBashRuns.length > 0 ? '✅ 有' : '❌ 无'}\n` +
+              `- 排在当前任务之前的消息数: ${tasksAhead}`,
           },
         },
         { tag: 'hr' },
@@ -368,8 +373,10 @@ export async function handleQueueDiagnose(
             tag: 'lark_md',
             content: `**队列判断**\n${
               queueInfo.isRunning
-                ? `当前有 run 在消费队列，该消息前面还有 ${tasksAhead} 个任务。`
-                : '当前没有活跃的 run 在消费队列（队列停滞）。'
+                ? `当前有 Agent run 在消费队列，该消息前面还有 ${tasksAhead} 个任务。`
+                : activeBashRuns.length > 0
+                  ? '当前没有 Agent run 在消费队列（队列停滞）；Bash 独立任务不影响队列消费。'
+                  : '当前没有 Agent run 在消费队列（队列停滞）。'
             }`,
           },
         },
