@@ -67,7 +67,7 @@ function defaultPiDir(): string {
  * `/home/user/project/sample_project` → `--home-user-project-sample_project--`。
  *
  * 不能与 claude 共用 `encodeProjectDirName`：claude 会把 `_` 归一成 `-`
- * （`my_disk` → `disk-d`），cwd 一含下划线就定位不到 pi 的真实目录，jsonl
+ * （`my_disk` → `my-disk`），cwd 一含下划线就定位不到 pi 的真实目录，jsonl
  * 用量整体读空、卡片退回 per-run live 口径（丢累计/Context 百分比/Compact）。
  * 也不能把这边的规则并回公共编码函数——claude/qoder 的落盘确实是 `_`→`-`，
  * 两套约定只是长得像，不是同一套。
