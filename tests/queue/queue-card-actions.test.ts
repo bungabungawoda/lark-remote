@@ -244,7 +244,7 @@ describe('queue card actions (queue.edit / queue.input / queue.immediate)', () =
 
       // Simulate clicking "⚡ 立即执行" on task 2's queue card
       const cardCtx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' };
-      await router.handleCardAction(
+      const res = await router.handleCardAction(
         { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-2' },
         cardCtx,
       );
@@ -267,7 +267,65 @@ describe('queue card actions (queue.edit / queue.input / queue.immediate)', () =
         expect(b.disabled).toBe(true);
       }
 
+      // 回调响应必须携带这张执行卡。只靠后台 PATCH 时，飞书会用 pre-click
+      // 快照覆盖它（buttons 保持可点），用户可反复点「立即执行」。
+      const responseCard = (
+        res as { card?: { type?: string; data?: Record<string, unknown> } } | undefined
+      )?.card;
+      expect(responseCard?.type).toBe('raw');
+      const responseHeader = responseCard?.data?.header as
+        { title?: { content?: string } } | undefined;
+      expect(responseHeader?.title?.content).toBe('▶️ 已开始执行');
+      for (const b of cardButtons(responseCard!.data as Card)) {
+        expect(b.disabled).toBe(true);
+      }
+
       // Cleanup
+      release1();
+      await new Promise((r) => setTimeout(r, 100));
+    });
+  });
+
+  describe('queue.cancel returns the cancelled card in the callback response', () => {
+    it('test_anchor_handleQueueCancel_response_carries_disabled_card', async () => {
+      // 回归锚点：即时卡片动作会等 handler 返回后才回包。queue.cancel 过去只在
+      // 后台 PATCH「❌ 已撤销」卡；回调响应没有 card 字段，飞书用 pre-click 快照
+      // 覆盖这次 PATCH，卡片标题仍是「等待当前任务结束」、两个按钮保持可点。
+      // 用户再点「撤销」只会收到「该消息不在队列中（可能已开始执行）」。
+      // 约束：点击产生的卡片状态必须随回调响应返回，不能只依赖后台 PATCH。
+      const { bridge, router, connector, tmpDir } = ctx;
+      const { release1 } = await setupTwoTaskQueueScenario(bridge, connector, tmpDir, {
+        firstMessagePreview: 'task 1 running',
+        secondMessagePreview: 'task 2 queued',
+      });
+
+      const res = await router.handleCardAction(
+        { cmd: 'queue.cancel', cwd: tmpDir, messageId: 'msg-2' },
+        { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' },
+      );
+
+      // 队列事实：消息已移除
+      expect(bridge.getQueuedTask(tmpDir, 'msg-2')).toBeUndefined();
+
+      // 回调响应带「已撤销」卡，且两个按钮全部禁用
+      const responseCard = (
+        res as { card?: { type?: string; data?: Record<string, unknown> } } | undefined
+      )?.card;
+      expect(responseCard?.type).toBe('raw');
+      const header = responseCard?.data?.header as { title?: { content?: string } } | undefined;
+      expect(header?.title?.content).toBe('❌ 已撤销');
+      const buttons = cardButtons(responseCard!.data as Card);
+      expect(buttons.map((b) => b.text?.content)).toEqual(['❌ 撤销', '⚡ 立即执行']);
+      for (const b of buttons) expect(b.disabled).toBe(true);
+
+      // 后台 PATCH 仍走同一份渲染（非点击路径如 queue.immediate 清队依赖它）
+      const patched = connector._cards.find(
+        (c) =>
+          ((c as Record<string, unknown>).header as { title?: { content?: string } } | undefined)
+            ?.title?.content === '❌ 已撤销',
+      );
+      expect(patched).toEqual(responseCard!.data);
+
       release1();
       await new Promise((r) => setTimeout(r, 100));
     });

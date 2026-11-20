@@ -811,50 +811,43 @@ export class QueueManager {
    * update: if the task was removed/cancelled while the send was in flight,
    * the card must keep its "❌ 已撤销" state instead of being flipped back to
    * executing. The mapping is deleted in finally in both cases.
+   *
+   * Returns the rendered card so click handlers can put it in the callback
+   * response (Feishu restores the pre-click snapshot when the response has no
+   * `card` field, which would silently undo a background PATCH).
    */
   async updateQueueCardToExecuting(
     cwd: string,
     messageId: string,
     messagePreview: string,
     started = false,
-  ): Promise<void> {
+  ): Promise<object | undefined> {
     const cardMessageId = await this.queueCardMessages.get(messageId);
     if (!cardMessageId) {
       getLogger().debug(`[queue-manager] no queue card to update, messageId=${messageId}`);
       return;
     }
 
-    const workspaceName = displayName(cwd);
+    // Prefer the live preview: an edited task's messagePreview is updated in
+    // place, and the passed-in snapshot may be stale if the card send was in
+    // flight while the user edited. The begin path (started=true) already
+    // passes the live preview captured at begin, so the fallback is only
+    // exercised when the task is no longer queued.
+    const liveTask = this.peek(cwd)?.tasks.find((t) => t.messageId === messageId);
+    const stillQueued = liveTask !== undefined;
+    if (!stillQueued && !started) {
+      getLogger().debug(
+        `[queue-manager] queue card update to executing skipped (task no longer queued and not started) messageId=${messageId}`,
+      );
+      return;
+    }
+    const card = this.buildExecutingQueueCard(
+      cwd,
+      messageId,
+      liveTask?.messagePreview ?? messagePreview,
+    );
 
     try {
-      // Prefer the live preview: an edited task's messagePreview is updated in
-      // place, and the passed-in snapshot may be stale if the card send was in
-      // flight while the user edited. The begin path (started=true) already
-      // passes the live preview captured at begin, so the fallback is only
-      // exercised when the task is no longer queued.
-      const liveTask = this.peek(cwd)?.tasks.find((t) => t.messageId === messageId);
-      const stillQueued = liveTask !== undefined;
-      if (!stillQueued && !started) {
-        getLogger().debug(
-          `[queue-manager] queue card update to executing skipped (task no longer queued and not started) messageId=${messageId}`,
-        );
-        return;
-      }
-      const previewForCard = liveTask?.messagePreview ?? messagePreview;
-      const card = cardWithHeader({
-        template: 'green',
-        title: '▶️ 已开始执行',
-        elements: [
-          {
-            tag: 'div',
-            text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
-          },
-          { tag: 'hr' },
-          { tag: 'div', text: { tag: 'lark_md', content: `📝 \`${previewForCard}\`` } },
-          { tag: 'hr' },
-          ...this.buildQueueActionButtons(cwd, messageId, true),
-        ],
-      });
       await this.updateCardWithRetry(cardMessageId, card);
       getLogger().debug(`[queue-manager] queue card updated to executing messageId=${messageId}`);
     } catch (err) {
@@ -862,6 +855,26 @@ export class QueueManager {
     } finally {
       this.queueCardMessages.delete(messageId);
     }
+    return card;
+  }
+
+  /** Render the "executing" queue card (pure; see `buildCancelledQueueCard`). */
+  private buildExecutingQueueCard(cwd: string, messageId: string, previewForCard: string): object {
+    const workspaceName = displayName(cwd);
+    return cardWithHeader({
+      template: 'green',
+      title: '▶️ 已开始执行',
+      elements: [
+        {
+          tag: 'div',
+          text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
+        },
+        { tag: 'hr' },
+        { tag: 'div', text: { tag: 'lark_md', content: `📝 \`${previewForCard}\`` } },
+        { tag: 'hr' },
+        ...this.buildQueueActionButtons(cwd, messageId, true),
+      ],
+    });
   }
 
   /** Remove a task from the queue by messageId. Returns true if found and removed. */
@@ -882,18 +895,14 @@ export class QueueManager {
     return true;
   }
 
-  /** Update queue card to "cancelled" status when user clicks 撤销. */
-  async updateQueueCardToCancelled(cwd: string, messageId: string): Promise<void> {
-    const cardMessageId = await this.queueCardMessages.get(messageId);
-    if (!cardMessageId) {
-      getLogger().debug(
-        `[queue-manager] no queue card to update (cancelled), messageId=${messageId}`,
-      );
-      return;
-    }
-
+  /**
+   * Render the "cancelled" queue card. Pure: reads no mapping and sends no
+   * request, so both the background PATCH and the click callback response use
+   * exactly the same content.
+   */
+  buildCancelledQueueCard(cwd: string, messageId: string): object {
     const workspaceName = displayName(cwd);
-    const card = cardWithHeader({
+    return cardWithHeader({
       template: 'gray',
       title: '❌ 已撤销',
       elements: [
@@ -907,6 +916,19 @@ export class QueueManager {
         ...this.buildQueueActionButtons(cwd, messageId, true),
       ],
     });
+  }
+
+  /** Update queue card to "cancelled" status when user clicks 撤销. */
+  async updateQueueCardToCancelled(cwd: string, messageId: string): Promise<void> {
+    const cardMessageId = await this.queueCardMessages.get(messageId);
+    if (!cardMessageId) {
+      getLogger().debug(
+        `[queue-manager] no queue card to update (cancelled), messageId=${messageId}`,
+      );
+      return;
+    }
+
+    const card = this.buildCancelledQueueCard(cwd, messageId);
 
     try {
       await this.updateCardWithRetry(cardMessageId, card);

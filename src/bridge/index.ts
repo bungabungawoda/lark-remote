@@ -790,14 +790,26 @@ export class Bridge {
     await this.queueManager.updateQueueCardToCancelled(cwd, messageId);
   }
 
+  /**
+   * Render the "cancelled" queue card for the click callback response.
+   *
+   * The click's resulting card state must travel in the response body: Feishu
+   * restores the pre-click snapshot when the response has no `card` field, so
+   * a background PATCH alone is silently undone.
+   */
+  buildCancelledQueueCard(cwd: string, messageId: string): object {
+    return this.queueManager.buildCancelledQueueCard(cwd, messageId);
+  }
+
   /** Mark a queued task's card as executing immediately (grey out buttons).
    *  Called by handleQueueImmediate so the user sees feedback right away
    *  instead of waiting for the queue callback. Idempotent: the queue
    *  callback's own updateQueueCardToExecuting call becomes a no-op because
-   *  updateQueueCardToExecuting deletes the card-message mapping in finally. */
-  async markQueueCardExecuting(cwd: string, messageId: string): Promise<void> {
+   *  updateQueueCardToExecuting deletes the card-message mapping in finally.
+   *  Returns the rendered card so the click callback response can carry it. */
+  async markQueueCardExecuting(cwd: string, messageId: string): Promise<object | undefined> {
     const task = this.getQueuedTask(cwd, messageId);
-    await this.queueManager.updateQueueCardToExecuting(
+    return this.queueManager.updateQueueCardToExecuting(
       cwd,
       messageId,
       task?.messagePreview ?? '',

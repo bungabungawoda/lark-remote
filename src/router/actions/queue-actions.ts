@@ -27,7 +27,7 @@ export async function handleQueueCancel(
   host: CommandRouter,
   value: { cwd?: string; messageId?: string },
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
@@ -37,6 +37,9 @@ export async function handleQueueCancel(
     // 队列卡的「已撤销」更新由 removeFromQueue 统一触发（单一收口）；
     // 这里只负责给点击者一个即时反馈。
     await host.bridge.sendResult({ text: '✅ 已从队列中撤销' }, ctx);
+    // 点击产生的卡片状态必须随回调响应返回：只有后台 PATCH 时，飞书会用
+    // pre-click 快照覆盖它，按钮保持可点（再点只会收到「该消息不在队列中」）。
+    return responseWithCard(host.bridge.buildCancelledQueueCard(cwd, messageId));
   } else {
     await host.bridge.sendResult({ text: '⚠️ 该消息不在队列中（可能已开始执行）' }, ctx);
   }
@@ -68,7 +71,7 @@ export async function handleQueueImmediate(
   host: CommandRouter,
   value: { cwd?: string; messageId?: string },
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
@@ -112,6 +115,7 @@ export async function handleQueueImmediate(
   // forwardToClaude waits for it before creating the run card.
   const releaseRunStart = host.bridge.holdQueueTaskRun(cwd, messageId);
 
+  let executingCard: object | undefined;
   try {
     // 1.5. If the user edited the message, the original closure (captured at
     // enqueue time with stale content) must NOT run. Register a one-shot
@@ -172,7 +176,7 @@ export async function handleQueueImmediate(
     }
 
     // 4.5/6. 按「目标此刻真的是下一个吗」给唯一一份用户可见反馈。
-    await reportImmediateOutcome(host, {
+    executingCard = await reportImmediateOutcome(host, {
       cwd,
       messageId,
       ctx,
@@ -184,6 +188,9 @@ export async function handleQueueImmediate(
   } finally {
     releaseRunStart();
   }
+  // 与 queue.cancel 同因：目标卡翻「执行中」后，必须让回调响应携带这张卡，
+  // 否则飞书恢复 pre-click 快照，两个按钮会继续可点。
+  return executingCard ? responseWithCard(executingCard) : undefined;
 }
 
 /**
@@ -236,7 +243,7 @@ export async function reportImmediateOutcome(
     stopUnconfirmed: boolean;
     agentKind?: AgentKind;
   },
-): Promise<void> {
+): Promise<object | undefined> {
   const { cwd, messageId, ctx, removedCount, stopped, stopUnconfirmed, agentKind } = opts;
   const targetStillQueued = host.bridge.getQueuedTask(cwd, messageId) !== undefined;
   if (!targetStillQueued) {
@@ -254,7 +261,7 @@ export async function reportImmediateOutcome(
         ctx,
       );
     }
-    return;
+    return undefined;
   }
   if (stopUnconfirmed) {
     const name = agentKind ? agentDisplayName(agentKind) : 'agent';
@@ -266,7 +273,7 @@ export async function reportImmediateOutcome(
       },
       ctx,
     );
-    return;
+    return undefined;
   }
   if (!host.bridge.isBusyFor(cwd)) {
     // Normal path: nothing new began during the stop, the target is next.
@@ -274,13 +281,13 @@ export async function reportImmediateOutcome(
     // Done BEFORE any removal so getQueuedTask still returns the task with
     // its (possibly edited) messagePreview for the card. The queue callback's
     // later updateQueueCardToExecuting call becomes a no-op (idempotent).
-    await host.bridge.markQueueCardExecuting(cwd, messageId);
+    const card = await host.bridge.markQueueCardExecuting(cwd, messageId);
     const stopPrefix = stopped ? '⚡ 已停止当前任务，' : '';
     await host.bridge.sendResult(
       { text: `${stopPrefix}清除了 ${removedCount} 条排队消息。您的消息将立即执行。` },
       ctx,
     );
-    return;
+    return card;
   }
   await host.bridge.sendResult(
     {
@@ -288,6 +295,7 @@ export async function reportImmediateOutcome(
     },
     ctx,
   );
+  return undefined;
 }
 
 /**
