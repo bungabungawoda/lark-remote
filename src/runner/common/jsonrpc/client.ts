@@ -96,22 +96,21 @@ async function disposeRpcClient<K, V extends RpcPendingEntry>(
  * Dispose a client instance from its shared lifecycle shape. JsonRpcClient and
  * PiRpcClient both delegate here so the dispose sequence has a single
  * implementation; only the pending map and the disposed message differ.
- * `client` is typed as object because the two classes keep `_disposed` /
- * `_ready` private — the shape is asserted locally.
  */
+export interface RpcClientLifecycle {
+  readonly disposed: boolean;
+  markDisposed(): void;
+}
+
 export function disposeRpcClientInstance<K, V extends RpcPendingEntry>(
-  client: object,
+  client: RpcClientLifecycle,
   pending: Map<K, V>,
   close: () => Promise<void>,
   disposedMessage: string = 'client disposed',
 ): Promise<void> {
-  const state = client as { _disposed: boolean; _ready: boolean };
   return disposeRpcClient({
-    alreadyDisposed: state._disposed,
-    markDisposed: () => {
-      state._disposed = true;
-      state._ready = false;
-    },
+    alreadyDisposed: client.disposed,
+    markDisposed: () => client.markDisposed(),
     pending,
     close,
     disposedMessage,
@@ -190,6 +189,15 @@ export class JsonRpcClient<InitializeResult = unknown> {
    */
   get healthy(): boolean {
     return !this._disposed && !this.transport.closed;
+  }
+
+  get disposed(): boolean {
+    return this._disposed;
+  }
+
+  markDisposed(): void {
+    this._disposed = true;
+    this._ready = false;
   }
 
   /**

@@ -15,6 +15,7 @@ import readline from 'node:readline';
 import YAML from 'yaml';
 import { AppConfigSchema } from './index.js';
 import { isDirectoryPath } from '../common/fs.js';
+import { isPidAlive as defaultIsPidAlive } from '../common/process.js';
 import { resolveBotNames, type BotInfoHttp, type BotNameSource } from './bot-info.js';
 import {
   displayWidth,
@@ -135,16 +136,6 @@ function readRunningPid(dir: string): number | undefined {
     return Number.isInteger(pid) && pid > 0 ? pid : undefined;
   } catch {
     return undefined;
-  }
-}
-
-function defaultIsPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // EPERM = 进程存在但当前用户无权发信号。
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

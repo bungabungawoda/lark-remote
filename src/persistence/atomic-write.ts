@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { bestEffortUnlink, withBusyRetry } from '../common/fs.js';
+import { bestEffortClose, bestEffortUnlink, withBusyRetry } from '../common/fs.js';
 import { getLogger } from '../logger/index.js';
 
 function uniqueSiblingPath(targetPath: string, kind: 'tmp' | 'copy'): string {
@@ -12,39 +12,16 @@ function uniqueSiblingPath(targetPath: string, kind: 'tmp' | 'copy'): string {
   );
 }
 
-function syncFile(pathToSync: string): void {
+/** Best-effort fsync for a file or directory; unsupported filesystems are logged at debug. */
+function syncPath(pathToSync: string, context: string): void {
   let fd: number | undefined;
   try {
     fd = fs.openSync(pathToSync, 'r');
     fs.fsyncSync(fd);
-  } catch {
-    /* fsync is best-effort; some filesystems do not support it. */
+  } catch (err) {
+    getLogger().debug(`[atomic-write] fsync failed context=${context} path=${pathToSync}:`, err);
   } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* closing after a successful fsync is cleanup-only */
-      }
-    }
-  }
-}
-
-function syncDirectory(dir: string): void {
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(dir, 'r');
-    fs.fsyncSync(fd);
-  } catch {
-    /* Directory fsync is best-effort and unsupported on some platforms. */
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* ignore close failure */
-      }
-    }
+    bestEffortClose(fd, `atomic-write ${context}`);
   }
 }
 
@@ -58,9 +35,9 @@ function moveAcrossDevices(srcPath: string, destPath: string): void {
   const siblingPath = uniqueSiblingPath(destPath, 'copy');
   try {
     fs.copyFileSync(srcPath, siblingPath);
-    syncFile(siblingPath);
+    syncPath(siblingPath, 'cross-device copy');
     withBusyRetry(() => fs.renameSync(siblingPath, destPath));
-    syncDirectory(destDir);
+    syncPath(destDir, 'cross-device directory');
   } finally {
     bestEffortUnlink(siblingPath);
   }
@@ -79,35 +56,15 @@ export function atomicWrite(
 ): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
-  // tmp 命名：pid-ts-rand 后缀，避免固定
-  // `.tmp` 名在异常残留后被下一次写入复用/误判；必须与目标同目录（rename 原子性）
-  const tmpPath = path.join(
-    dir,
-    `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`,
-  );
+  // tmp 必须与目标同目录（rename 原子性）；随机后缀避免异常残留被复用/误判。
+  const tmpPath = uniqueSiblingPath(filePath, 'tmp');
   // Buffer 内容忽略 encoding（writeFileSync 对 Buffer 自动以二进制写出）。
   fs.writeFileSync(tmpPath, content, encoding);
   // fsync the tmp file before rename so its data is durable on disk;
   // rename itself is only a metadata change, so without fsync a crash after
   // rename could leave the target as a 0-byte file. Best-effort: some
   // filesystems (tmpfs) may not support fsync — ignore those errors.
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(tmpPath, 'r');
-    fs.fsyncSync(fd);
-  } catch {
-    /* fsync unavailable on this fs — best-effort durability */
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* ignore close failure */
-      }
-    }
-  }
+  syncPath(tmpPath, 'tmp');
   let preserveTmpScene = false;
   try {
     withBusyRetry(() => fs.renameSync(tmpPath, filePath), {

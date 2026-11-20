@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import { estimateCardBytes, renderRunCard } from './run-renderer.js';
+import { renderRunCard } from './run-renderer.js';
 import type { RunBlock, RunState } from './run-state.js';
 import {
   countCardComponents,
@@ -13,10 +13,7 @@ import { CARD_BUDGET_BYTES } from './text-truncate.js';
 /**
  * 流式卡片渲染的属性测试。
  *
- * 1) 估算必须等于实际渲染字节（差异 ≤ 200B）：估算是「先估后建」的性能开关，
- *    估低会先建一张超限卡再丢弃（白付 CPU），估高会把本可完整展示的 CJK 会话
- *    误降级、丢掉早期思考与工具。手写用例只能覆盖作者想到的转义形态。
- * 2) 任意状态渲染出的卡都不得越过飞书 11310 的字节 / elements / tagged 上限，
+ * 任意状态渲染出的卡都不得越过飞书 11310 的字节 / elements / tagged 上限，
  *    否则用户看到的是一张整卡报错——这比少显示几行严重得多。
  */
 
@@ -108,19 +105,6 @@ describe('renderRunCard invariants (property)', () => {
         );
         expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
         expect(countCardComponents(card)).toBeLessThanOrEqual(MAX_CARD_COMPONENTS);
-      }),
-      { numRuns: 60 },
-    );
-  });
-
-  it('keeps the byte estimate within 200B of the rendered card on the normal path', () => {
-    fc.assert(
-      fc.property(stateArb, (state) => {
-        const estimate = estimateCardBytes(state);
-        // 估算 ≥ 24KB 时渲染器会主动降级，此时两者本就不应相等；只对比正常路径。
-        fc.pre(estimate < 24_000);
-        const actual = Buffer.byteLength(JSON.stringify(renderRunCard(state)), 'utf8');
-        expect(Math.abs(actual - estimate)).toBeLessThanOrEqual(200);
       }),
       { numRuns: 60 },
     );

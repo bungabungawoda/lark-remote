@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { getLogger } from '../../logger/index.js';
 import {
@@ -24,6 +25,57 @@ export interface BashRunner {
   run(command: string, opts: { cwd: string }): AsyncGenerator<BashOutputEvent>;
   stop(opts?: { immediate?: boolean }): Promise<void>;
   get isRunning(): boolean;
+}
+
+interface StreamPump {
+  readonly kind: 'stdout' | 'stderr';
+  readonly queue: string[];
+  drainOne(): string | undefined;
+  maybeResume(): void;
+  flushDecoder(): void;
+}
+
+/** One decoder + queue + pause/resume state per child stream. */
+function createStreamPump(
+  stream: Readable,
+  kind: 'stdout' | 'stderr',
+  highWater: number,
+  lowWater: number,
+  notifyData: () => void,
+): StreamPump {
+  const decoder = new StringDecoder('utf8');
+  const queue: string[] = [];
+  let paused = false;
+
+  stream.on('data', (chunk: Buffer) => {
+    const text = decoder.write(chunk);
+    getLogger().debug(`[bash-runner] ${kind}: ${text.slice(0, 100)}`);
+    if (!text) return;
+    queue.push(text);
+    if (!paused && queue.length > highWater) {
+      paused = true;
+      stream.pause();
+    }
+    notifyData();
+  });
+
+  return {
+    kind,
+    queue,
+    drainOne(): string | undefined {
+      return queue.shift();
+    },
+    maybeResume(): void {
+      if (paused && queue.length <= lowWater) {
+        paused = false;
+        stream.resume();
+      }
+    },
+    flushDecoder(): void {
+      const tail = decoder.end();
+      if (tail) queue.push(tail);
+    },
+  };
 }
 
 /**
@@ -117,40 +169,6 @@ export class BashProcessRunner implements BashRunner {
     // group via cleanupOnExit instead of orphaning `!` processes.
     registerExitCleanup(this);
 
-    // Single handler per stream: log + enqueue + wake the run loop. The
-    // previous implementation registered two `data` listeners per stream (one
-    // for logging, one for queueing) -- both fired on the same chunk.
-    const stdoutQueue: string[] = [];
-    const stderrQueue: string[] = [];
-    const stdoutDecoder = new StringDecoder('utf8');
-    const stderrDecoder = new StringDecoder('utf8');
-    // 背压状态（层④）：队列超高水位 → pause 对应流；drain 到低水位 → resume。
-    let stdoutPaused = false;
-    let stderrPaused = false;
-    const maybePauseStdout = (): void => {
-      if (!stdoutPaused && stdoutQueue.length > this.queueHighWater) {
-        stdoutPaused = true;
-        stdout.pause();
-      }
-    };
-    const maybeResumeStdout = (): void => {
-      if (stdoutPaused && stdoutQueue.length <= this.queueLowWater) {
-        stdoutPaused = false;
-        stdout.resume();
-      }
-    };
-    const maybePauseStderr = (): void => {
-      if (!stderrPaused && stderrQueue.length > this.queueHighWater) {
-        stderrPaused = true;
-        stderr.pause();
-      }
-    };
-    const maybeResumeStderr = (): void => {
-      if (stderrPaused && stderrQueue.length <= this.queueLowWater) {
-        stderrPaused = false;
-        stderr.resume();
-      }
-    };
     // Resolved by a `data` event to signal "more output may be available,
     // re-check the queues". Held as a field so either stream's handler can
     // resolve the single in-flight waiter. Cleared on resolve and on loop exit.
@@ -162,26 +180,21 @@ export class BashProcessRunner implements BashRunner {
         resolve();
       }
     };
-
-    stdout.on('data', (chunk: Buffer) => {
-      const text = stdoutDecoder.write(chunk);
-      getLogger().debug(`[bash-runner] stdout: ${text.slice(0, 100)}`);
-      if (text) {
-        stdoutQueue.push(text);
-        maybePauseStdout();
-        notifyData();
+    // 背压：队列超高水位 → pause；drain 到低水位 → resume（两路流共用）。
+    const pumps = [
+      createStreamPump(stdout, 'stdout', this.queueHighWater, this.queueLowWater, notifyData),
+      createStreamPump(stderr, 'stderr', this.queueHighWater, this.queueLowWater, notifyData),
+    ];
+    function* drainQueues(): Generator<BashOutputEvent> {
+      for (const pump of pumps) {
+        while (pump.queue.length > 0) {
+          yield { type: pump.kind, content: pump.drainOne()! };
+          // Resume after the consumer takes the item (matches drain semantics:
+          // the low-water check observes the queue left for the next call).
+          pump.maybeResume();
+        }
       }
-    });
-
-    stderr.on('data', (chunk: Buffer) => {
-      const text = stderrDecoder.write(chunk);
-      getLogger().debug(`[bash-runner] stderr: ${text.slice(0, 100)}`);
-      if (text) {
-        stderrQueue.push(text);
-        maybePauseStderr();
-        notifyData();
-      }
-    });
+    }
 
     // Use the `exit` event (not `close`): `close` waits for ALL child processes
     // including background daemons (`nohup &`), which can take forever. `exit`
@@ -206,53 +219,29 @@ export class BashProcessRunner implements BashRunner {
 
     try {
       while (completionResult === null) {
+        // Register the wakeup before draining: data can arrive between the
+        // drain and the wait, and a wakeup without a waiter would be lost.
+        const nextData = new Promise<void>((resolve) => {
+          dataWaiter = resolve;
+        });
         // Drain queued chunks before waiting, so output is streamed
         // incrementally rather than batched at exit.
-        while (stdoutQueue.length > 0) {
-          yield { type: 'stdout', content: stdoutQueue.shift()! };
-          maybeResumeStdout();
-        }
-        while (stderrQueue.length > 0) {
-          yield { type: 'stderr', content: stderrQueue.shift()! };
-          maybeResumeStderr();
-        }
+        yield* drainQueues();
 
-        if (completionResult === null) {
+        if (completionResult === null && !pumps.some((pump) => pump.queue.length > 0)) {
           // Wait for the next chunk OR process exit/error -- no fixed-interval
           // polling. Racing `completion` guarantees the loop wakes on exit even
-          // when the command produces no output (e.g. `true`, `nohup &`), which
-          // the previous setTimeout(100) poll only caught after a full tick.
-          const nextData = new Promise<void>((resolve) => {
-            dataWaiter = resolve;
-          });
+          // when the command produces no output (e.g. `true`, `nohup &`).
           await Promise.race([nextData, completion]);
-          dataWaiter = null;
         }
-      }
-
-      // Drain any chunks that arrived between the last drain and exit. (Data
-      // emitted after the exit yield is not delivered -- matching the prior
-      // contract; the bridge accumulates output/stderr from pre-exit events.)
-      while (stdoutQueue.length > 0) {
-        yield { type: 'stdout', content: stdoutQueue.shift()! };
-        maybeResumeStdout();
-      }
-      while (stderrQueue.length > 0) {
-        yield { type: 'stderr', content: stderrQueue.shift()! };
-        maybeResumeStderr();
+        dataWaiter = null;
       }
 
       const { code, signal } = completionResult;
-      const stdoutTail = stdoutDecoder.end();
-      const stderrTail = stderrDecoder.end();
-      if (stdoutTail) stdoutQueue.push(stdoutTail);
-      if (stderrTail) stderrQueue.push(stderrTail);
-      while (stdoutQueue.length > 0) {
-        yield { type: 'stdout', content: stdoutQueue.shift()! };
-      }
-      while (stderrQueue.length > 0) {
-        yield { type: 'stderr', content: stderrQueue.shift()! };
-      }
+      // Drain chunks that arrived between the last drain and exit, then flush
+      // decoder tails (split multibyte characters).
+      for (const pump of pumps) pump.flushDecoder();
+      yield* drainQueues();
       getLogger().info(`[bash-runner] process exited with code=${code} signal=${signal}`);
       // A SIGKILL'd process (e.g. from /stop) has exitCode=null and a signal
       // set. Reporting `code ?? 0` would falsely claim success; use -1 to

@@ -924,6 +924,16 @@ export function removeBackgroundJob(state: RunState, jobId: string): RunState {
 
 /** 宿主仍在执行的任务状态词。状态缺失也算在跑——它还在名单上。 */
 const RUNNING_JOB_STATUSES = new Set(['running', 'stopping']);
+const ENDED_JOB_STATUSES = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'canceled',
+  'error',
+  'ended',
+  'killed',
+  'timeout',
+]);
 
 /**
  * 该任务是否仍在跑（`ended` / `unknown` 都不算）。
@@ -935,9 +945,13 @@ export function isLiveBackgroundJob(job: BackgroundJobRoster): boolean {
   return job.status === undefined || RUNNING_JOB_STATUSES.has(job.status);
 }
 
-/** 宿主状态 → 桥侧状态：仍在跑的保留原词，其余已知终态归一成 `ended`。 */
+/**
+ * 宿主状态 → 桥侧状态：仍在跑的保留原词，已知终态归一成 `ended`，
+ * 未知状态保留原词——新瞬态（queued/paused 等）不能被误画成「已结束」。
+ */
 function bridgeJobStatus(status: string): string {
-  return RUNNING_JOB_STATUSES.has(status) ? status : 'ended';
+  if (RUNNING_JOB_STATUSES.has(status)) return status;
+  return ENDED_JOB_STATUSES.has(status) ? 'ended' : status;
 }
 
 /**

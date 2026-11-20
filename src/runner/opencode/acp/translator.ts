@@ -30,8 +30,6 @@
 import type { AgentEvent, ApprovalView } from '../../types.js';
 import type {
   RequestPermissionParams,
-  AgentThoughtChunkEvent,
-  ToolCallEvent,
   ToolCallUpdateEvent,
 } from '../../common/acp/protocol-types.js';
 import {
@@ -51,32 +49,11 @@ import {
 
 export class OpencodeAcpTranslator extends BaseAcpTranslator {
   protected readonly logTag = 'opencode-acp-translator';
+  protected readonly toolArgsFromContent = false;
 
   // =========================================================================
   // Content channel: wire deltas → assistant incremental channel
   // =========================================================================
-
-  protected override handleAgentThoughtChunk(
-    event: AgentThoughtChunkEvent,
-    _sessionId: string,
-  ): AcpTranslatorEvent[] {
-    return [
-      {
-        type: 'assistant',
-        message: {
-          content: [
-            {
-              type: 'thinking',
-              thinking: event.content.text,
-              // 同一 reasoning part 的续写 delta 共享 messageId；换 part 才开新块。
-              ...(event.messageId !== undefined ? { itemId: event.messageId } : {}),
-            },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-  }
 
   // =========================================================================
   // opencode-specific hooks
@@ -115,12 +92,6 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
    * command — the corruption this override prevents. Return undefined: nothing
    * to track from content (rawInput tracking in the base still applies).
    */
-  protected override extractToolCallArgsText(
-    _event: ToolCallEvent | ToolCallUpdateEvent,
-  ): string | undefined {
-    return undefined;
-  }
-
   /**
    * opencode emits the tool_call while args are still streaming: the part is
    * created with `state:{status:'pending',input:{}}` (decompiled acp service),

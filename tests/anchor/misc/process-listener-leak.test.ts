@@ -107,8 +107,8 @@ describe('registerExitHandlers 不累积 process 监听器', () => {
           }),
         isRegistered: () => true,
         listRegistered: () => ['claude'],
-        setConfigContainer: () => {},
-        getConfigContainer: () => ({ current: config }),
+        updateConfig: () => {},
+        getLatestConfig: (fallback: unknown) => config ?? fallback,
       };
       const stubRunner = {
         isRunning: false,

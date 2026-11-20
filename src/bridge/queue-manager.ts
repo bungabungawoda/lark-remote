@@ -156,14 +156,27 @@ interface QueueInfo {
 }
 
 /**
+ * All per-workspace queue state in one object. Keeping the fields together
+ * makes the lane lifecycle (create → enqueue → execute → drain) explicit and
+ * prevents cleanup from forgetting one Map.
+ */
+interface LaneState {
+  tail: Promise<void>;
+  tasks: QueuedTask[];
+  pendingOrExecuting: number;
+  executing?: ExecutingInfo;
+  interruptedSlots: Set<number>;
+  replacements: Map<string, () => Promise<void>>;
+  runHolds: Map<string, TaskRunHold[]>;
+}
+
+/**
  * QueueManager handles the per-workspace serial processing queue.
  * Manages task queuing, cancellation, and queue status card rendering.
  */
 export class QueueManager {
-  /** Per-workspace (cwd) serial queues. Key = cwd, value = tail of promise chain. */
-  private queues = new Map<string, Promise<void>>();
-  /** Per-workspace queued tasks for queue display cards. Key = cwd, value = task list. */
-  private queuedTasks = new Map<string, QueuedTask[]>();
+  /** Per-workspace serial queue + display/bookkeeping state. */
+  private lanes = new Map<string, LaneState>();
   /**
    * Map from user messageId to the queue card's Feishu send promise. Storing
    * the promise (not the resolved id) closes the race where the card send is
@@ -174,8 +187,6 @@ export class QueueManager {
    */
   /** queue card 的 send promise 表（public：bridge 集成测试注入/断言用）。 */
   queueCardMessages = new Map<string, Promise<string | undefined>>();
-  /** Track number of executing tasks per cwd (for queue card display). */
-  private pendingOrExecutingCount = new Map<string, number>();
   /**
    * Monotonic counter minting a unique slot id per enqueued task. A slot
    * identifies one task's execution period for the interrupt bookkeeping in
@@ -184,40 +195,6 @@ export class QueueManager {
    * re-armed count after repeated resets.
    */
   private slotCounter = 0;
-  /**
-   * Per-workspace record of the task currently executing — the lane occupant.
-   * Set in the begin path right before the task runs; deleted by that task's
-   * settle. Carries both the slot id (`resetExecutingCount` binds the
-   * interrupt credit to exactly the interrupted task's slot) and the display
-   * info the queue card needs to name what a waiting message waits for.
-   *
-   * 一次 Compact 占着 lane，新消息的排队卡曾写「位置: 第 1
-   * 位 / 前面还有: 0 条消息」——开卡判据看 lane（含正在执行者），位置文案只看
-   * 等待队列，两个口径的差集正是这条记录。
-   */
-  private executingInfo = new Map<string, ExecutingInfo>();
-  /**
-   * Per-workspace set of slot ids whose task was interrupted by
-   * `resetExecutingCount`. When such a slot settles, its decrement is skipped
-   * (the reset already zeroed the count). A slot is granted at most once —
-   * repeated resets of the same executing task do not mint extra credits —
-   * which prevents a normal task's settle from consuming a credit instead of
-   * decrementing, leaking the re-armed count to 1.
-   */
-  private interruptedSlots = new Map<string, Set<number>>();
-  /** Per-workspace messageId → replacement closure, set by queue.edit + immediate. */
-  private taskReplacements = new Map<string, Map<string, () => Promise<void>>>();
-  /**
-   * Per-workspace messageId → run 起始 hold，单次消费。
-   *
-   * queue.immediate 在入口注册、finally 释放；目标任务的 begin 路径照常推进
-   * （槽位移除、排队卡翻执行态），但 `forwardToClaude` 在建 run 卡片前会等
-   * 当前 lane 占用者的 hold。这样「先 toast、后 run 卡片」与队列链推进速度
-   * 无关：run 卡片是点击后最后一条新消息，聊天列表预览才会跟随它的标题变化。
-   * hold 按队列 key 存（order.exec 的内部 key 也能命中），通过 executingInfo
-   * 找到当前占用者，不需要把队列 key 穿过 router/forwardToClaude 的参数。
-   */
-  private taskRunHolds = new Map<string, Map<string, TaskRunHold[]>>();
   /**
    * MessageIds of tasks that have actually begun executing (cancellation check
    * passed, task removed from the queue). Entries are sticky: they remain
@@ -254,6 +231,28 @@ export class QueueManager {
     this.updateCard = updateCard;
   }
 
+  /** Get or create the lane for a cwd. */
+  private lane(cwd: string): LaneState {
+    let lane = this.lanes.get(cwd);
+    if (!lane) {
+      lane = {
+        tail: Promise.resolve(),
+        tasks: [],
+        pendingOrExecuting: 0,
+        interruptedSlots: new Set(),
+        replacements: new Map(),
+        runHolds: new Map(),
+      };
+      this.lanes.set(cwd, lane);
+    }
+    return lane;
+  }
+
+  /** Read-only lane lookup; undefined when the lane has never existed/drained. */
+  private peek(cwd: string): LaneState | undefined {
+    return this.lanes.get(cwd);
+  }
+
   /**
    * Enqueue a task into the workspace-level serial queue.
    * Each cwd has its own serial queue for parallel execution across workspaces.
@@ -279,17 +278,12 @@ export class QueueManager {
     const taskMeta = opts?.taskMeta;
     if (taskMeta && !this.registerQueuedTask(cwd, taskMeta)) return Promise.resolve();
 
-    // Get or create the queue for this cwd
-    let queue = this.queues.get(cwd);
-    if (!queue) {
-      queue = Promise.resolve();
-      this.queues.set(cwd, queue);
-    }
+    const lane = this.lane(cwd);
     getLogger().debug(`[queue-manager] enqueue cwd=${cwd}`);
 
     // Capture messageId for cancellation guard
     const messageId = taskMeta?.messageId;
-    const newQueue = queue
+    const newQueue = lane.tail
       .then(() => this.beginQueuedTask(cwd, slotId, messageId, task, taskMeta))
       .then(() => {
         getLogger().debug(`[queue-manager] task end cwd=${cwd}`);
@@ -305,7 +299,7 @@ export class QueueManager {
         // even when the task errors after beginning.
         this.decrementExecutingCount(cwd, slotId);
       });
-    this.queues.set(cwd, newQueue);
+    lane.tail = newQueue;
     return this.registerCommittedWork(newQueue);
   }
 
@@ -337,8 +331,9 @@ export class QueueManager {
     taskMeta: NonNullable<EnqueueOptions['taskMeta']>,
   ): boolean {
     // Check if there are tasks waiting BEFORE adding this one
-    const currentExecutingCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
-    const currentQueueLength = this.queuedTasks.get(cwd)?.length ?? 0;
+    const lane = this.lane(cwd);
+    const currentExecutingCount = lane.pendingOrExecuting;
+    const currentQueueLength = lane.tasks.length;
     const hasWaitingTasks = currentExecutingCount > 0 || currentQueueLength > 0;
 
     if (currentQueueLength >= MAX_WAITING_QUEUE) {
@@ -362,11 +357,7 @@ export class QueueManager {
     };
 
     // Add to cwd queue list
-    let taskList = this.queuedTasks.get(cwd);
-    if (!taskList) {
-      taskList = [];
-      this.queuedTasks.set(cwd, taskList);
-    }
+    const taskList = lane.tasks;
     // 身份不变量 tripwire：同一 cwd 内 queue key 必须唯一（一次入队动作一个
     // key，铸造点 router.mintQueueTaskKey）。撞 key 时位置显示/撤销/立即执行/
     // 卡片更新会串到别的条目上。这里不改行为，只留证据。
@@ -379,7 +370,7 @@ export class QueueManager {
     taskList.push(queuedTask);
 
     // Increment executing count SYNCHRONOUSLY so subsequent enqueues see it
-    this.pendingOrExecutingCount.set(cwd, currentExecutingCount + 1);
+    lane.pendingOrExecuting = currentExecutingCount + 1;
 
     // Only send the queue card if the task actually has to wait.
     if (hasWaitingTasks) {
@@ -447,7 +438,7 @@ export class QueueManager {
     let livePreview = taskMeta?.messagePreview ?? '';
     // Check if this task was cancelled before executing
     if (messageId) {
-      const taskList = this.queuedTasks.get(cwd);
+      const taskList = this.peek(cwd)?.tasks;
       const idx = taskList?.findIndex((t) => t.messageId === messageId) ?? -1;
       if (!taskList || idx < 0) {
         getLogger().debug(
@@ -489,9 +480,10 @@ export class QueueManager {
     // taskMeta: resetExecutingCount can clear the count for any cwd,
     // and a task that resumes after an interrupt must re-arm even when it
     // carries no metadata.
-    const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
+    const lane = this.lane(cwd);
+    const currentCount = lane.pendingOrExecuting;
     if (currentCount < 1) {
-      this.pendingOrExecutingCount.set(cwd, 1);
+      lane.pendingOrExecuting = 1;
       getLogger().debug(
         `[queue-manager] re-armed pendingOrExecutingCount cwd=${cwd} (interrupt resume)`,
       );
@@ -501,26 +493,23 @@ export class QueueManager {
     // the interrupt credit to exactly this task; the settle removes the
     // record. `kind`/`label` let a later message's queue card name what it
     // is waiting for instead of reporting "前面还有 0 条".
-    this.executingInfo.set(cwd, {
+    lane.executing = {
       slotId,
       messageId,
       kind: taskMeta?.kind ?? 'message',
       label: laneOccupantLabel(taskMeta?.kind ?? 'message', livePreview),
       preview: livePreview,
       startedAt: Date.now(),
-    });
+    };
     return replacement ? replacement() : task();
   }
 
   /** 取走并清除该任务的一次性替换闭包（消费即销毁）。 */
   private takeTaskReplacement(cwd: string, messageId: string): (() => Promise<void>) | undefined {
-    const workspaceReplacements = this.taskReplacements.get(cwd);
-    const replacement = workspaceReplacements?.get(messageId);
+    const lane = this.peek(cwd);
+    const replacement = lane?.replacements.get(messageId);
     if (replacement) {
-      workspaceReplacements?.delete(messageId);
-      if (workspaceReplacements && workspaceReplacements.size === 0) {
-        this.taskReplacements.delete(cwd);
-      }
+      lane?.replacements.delete(messageId);
     }
     return replacement;
   }
@@ -552,16 +541,12 @@ export class QueueManager {
       }),
       release: () => resolve(),
     };
-    let workspaceHolds = this.taskRunHolds.get(cwd);
-    if (!workspaceHolds) {
-      workspaceHolds = new Map();
-      this.taskRunHolds.set(cwd, workspaceHolds);
-    }
-    const holds = workspaceHolds.get(messageId);
+    const lane = this.lane(cwd);
+    const holds = lane.runHolds.get(messageId);
     if (holds) {
       holds.push(hold);
     } else {
-      workspaceHolds.set(messageId, [hold]);
+      lane.runHolds.set(messageId, [hold]);
     }
     getLogger().debug(`[queue-manager] hold task run start cwd=${cwd} messageId=${messageId}`);
     return () => {
@@ -569,13 +554,12 @@ export class QueueManager {
       // captured (and deleted) this entry, and the captured promise still needs
       // to settle.
       hold.release();
-      const current = this.taskRunHolds.get(cwd)?.get(messageId);
+      const current = this.peek(cwd)?.runHolds.get(messageId);
       if (!current) return;
       const idx = current.indexOf(hold);
       if (idx >= 0) current.splice(idx, 1);
       if (current.length > 0) return;
-      this.taskRunHolds.get(cwd)?.delete(messageId);
-      if (this.taskRunHolds.get(cwd)?.size === 0) this.taskRunHolds.delete(cwd);
+      this.peek(cwd)?.runHolds.delete(messageId);
     };
   }
 
@@ -585,13 +569,12 @@ export class QueueManager {
    * （release 仍会 settle 已捕获的 promise）。
    */
   async awaitTaskRunStart(cwd: string): Promise<void> {
-    const messageId = this.executingInfo.get(cwd)?.messageId;
+    const lane = this.peek(cwd);
+    const messageId = lane?.executing?.messageId;
     if (!messageId) return;
-    const workspaceHolds = this.taskRunHolds.get(cwd);
-    const holds = workspaceHolds?.get(messageId);
+    const holds = lane?.runHolds.get(messageId);
     if (!holds || holds.length === 0) return;
-    workspaceHolds?.delete(messageId);
-    if (workspaceHolds?.size === 0) this.taskRunHolds.delete(cwd);
+    lane?.runHolds.delete(messageId);
     getLogger().debug(
       `[queue-manager] awaiting task run start cwd=${cwd} messageId=${messageId} holds=${holds.length}`,
     );
@@ -604,12 +587,7 @@ export class QueueManager {
    * after it). Consumed when the task's slot begins; removed if cancelled.
    */
   setTaskReplacement(cwd: string, messageId: string, task: () => Promise<void>): void {
-    let workspaceReplacements = this.taskReplacements.get(cwd);
-    if (!workspaceReplacements) {
-      workspaceReplacements = new Map();
-      this.taskReplacements.set(cwd, workspaceReplacements);
-    }
-    workspaceReplacements.set(messageId, task);
+    this.lane(cwd).replacements.set(messageId, task);
     getLogger().debug(`[queue-manager] set task replacement cwd=${cwd} messageId=${messageId}`);
   }
 
@@ -642,7 +620,7 @@ export class QueueManager {
      *  for hand-typed messages. */
     feishuReplyTo?: string,
   ): Promise<string | undefined> {
-    const taskList = this.queuedTasks.get(cwd) ?? [];
+    const taskList = this.peek(cwd)?.tasks ?? [];
     const positionInQueue = taskList.findIndex(
       (t) => t.chatId === chatId && t.messageId === replyToMessageId,
     );
@@ -688,7 +666,7 @@ export class QueueManager {
 
   /** Get queue info for a cwd. */
   getQueueInfo(cwd: string): QueueInfo {
-    const taskList = this.queuedTasks.get(cwd) ?? [];
+    const taskList = this.peek(cwd)?.tasks ?? [];
     return {
       position: taskList.length,
       tasksAhead: Math.max(0, taskList.length - 1),
@@ -705,7 +683,7 @@ export class QueueManager {
     messagePreview?: string,
   ): object[] {
     const workspaceName = displayName(cwd);
-    const occupant = this.executingInfo.get(cwd);
+    const occupant = this.peek(cwd)?.executing;
     const elements: object[] = [
       {
         tag: 'div',
@@ -762,7 +740,7 @@ export class QueueManager {
         tag: 'div',
         text: { tag: 'lark_md', content: `📝 \`${messagePreview}\`` },
       });
-      const task = this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
+      const task = this.peek(cwd)?.tasks.find((t) => t.messageId === messageId);
       if (task?.editable !== false) {
         // Edit button: a pending (queued) task is editable by default. The
         // executing/cancelled states render via dedicated card builders that
@@ -854,7 +832,7 @@ export class QueueManager {
       // flight while the user edited. The begin path (started=true) already
       // passes the live preview captured at begin, so the fallback is only
       // exercised when the task is no longer queued.
-      const liveTask = this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
+      const liveTask = this.peek(cwd)?.tasks.find((t) => t.messageId === messageId);
       const stillQueued = liveTask !== undefined;
       if (!stillQueued && !started) {
         getLogger().debug(
@@ -890,11 +868,8 @@ export class QueueManager {
   removeFromQueue(cwd: string, messageId: string): boolean {
     // Drop any one-shot replacement for this task: a cancelled/removed task
     // must never leave a closure behind that could execute later.
-    const workspaceReplacements = this.taskReplacements.get(cwd);
-    if (workspaceReplacements?.delete(messageId) && workspaceReplacements.size === 0) {
-      this.taskReplacements.delete(cwd);
-    }
-    const taskList = this.queuedTasks.get(cwd);
+    this.peek(cwd)?.replacements.delete(messageId);
+    const taskList = this.peek(cwd)?.tasks;
     if (!taskList) return false;
 
     const index = taskList.findIndex((t) => t.messageId === messageId);
@@ -962,7 +937,7 @@ export class QueueManager {
 
   /** Get task metadata from queue. */
   getQueuedTask(cwd: string, messageId: string): QueuedTask | undefined {
-    return this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
+    return this.peek(cwd)?.tasks.find((t) => t.messageId === messageId);
   }
 
   /**
@@ -977,12 +952,12 @@ export class QueueManager {
 
   /** Get all queued tasks for a cwd. Returns a copy to prevent aliasing bugs. */
   getQueuedTasks(cwd: string): QueuedTask[] {
-    return [...(this.queuedTasks.get(cwd) ?? [])];
+    return [...(this.peek(cwd)?.tasks ?? [])];
   }
 
   /** Update the messagePreview for a queued task. Returns true if found and updated. */
   updateQueuedTaskMessage(cwd: string, messageId: string, newMessage: string): boolean {
-    const task = this.queuedTasks.get(cwd)?.find((t) => t.messageId === messageId);
+    const task = this.peek(cwd)?.tasks.find((t) => t.messageId === messageId);
     if (!task) return false;
 
     task.messagePreview = newMessage;
@@ -1004,7 +979,7 @@ export class QueueManager {
    * response updates the card synchronously with no API race.
    */
   buildQueueCardForEdit(cwd: string, messageId: string, newMessagePreview: string): object | null {
-    const taskList = this.queuedTasks.get(cwd) ?? [];
+    const taskList = this.peek(cwd)?.tasks ?? [];
     const positionInQueue = taskList.findIndex((t) => t.messageId === messageId);
     if (positionInQueue < 0) {
       getLogger().info(
@@ -1046,40 +1021,33 @@ export class QueueManager {
    * 3. Otherwise → normal decrement.
    */
   private decrementExecutingCount(cwd: string, slotId: number): void {
-    if (this.executingInfo.get(cwd)?.slotId === slotId) {
-      this.executingInfo.delete(cwd);
+    const lane = this.peek(cwd);
+    if (lane?.executing?.slotId === slotId) {
+      lane.executing = undefined;
     }
-    const interrupted = this.interruptedSlots.get(cwd);
+    const interrupted = lane?.interruptedSlots;
     if (interrupted?.has(slotId)) {
       interrupted.delete(slotId);
-      if (interrupted.size === 0) {
-        this.interruptedSlots.delete(cwd);
-      }
       getLogger().debug(
         `[queue-manager] skip decrement (interrupted slot) cwd=${cwd} slot=${slotId}`,
       );
       this.cleanupLaneIfDrained(cwd);
       return;
     }
-    const count = this.pendingOrExecutingCount.get(cwd) ?? 1;
-    this.pendingOrExecutingCount.set(cwd, Math.max(0, count - 1));
+    if (lane) lane.pendingOrExecuting = Math.max(0, lane.pendingOrExecuting - 1);
     this.cleanupLaneIfDrained(cwd);
   }
 
   private cleanupLaneIfDrained(cwd: string): void {
     if (this.isWorkspaceRunning(cwd)) return;
-    if (this.executingInfo.get(cwd)?.slotId !== undefined) return;
-    if ((this.pendingOrExecutingCount.get(cwd) ?? 0) !== 0) return;
-    if ((this.queuedTasks.get(cwd)?.length ?? 0) !== 0) return;
-    if (this.taskReplacements.get(cwd)?.size) return;
-    if (this.taskRunHolds.get(cwd)?.size) return;
-    this.queues.delete(cwd);
-    this.queuedTasks.delete(cwd);
-    this.pendingOrExecutingCount.delete(cwd);
-    this.executingInfo.delete(cwd);
-    this.interruptedSlots.delete(cwd);
-    this.taskReplacements.delete(cwd);
-    this.taskRunHolds.delete(cwd);
+    const lane = this.peek(cwd);
+    if (!lane) return;
+    if (lane.executing?.slotId !== undefined) return;
+    if (lane.pendingOrExecuting !== 0) return;
+    if (lane.tasks.length !== 0) return;
+    if (lane.replacements.size) return;
+    if (lane.runHolds.size) return;
+    this.lanes.delete(cwd);
     getLogger().debug(`[queue-manager] lane drained and cleaned cwd=${cwd}`);
   }
 
@@ -1110,7 +1078,8 @@ export class QueueManager {
    * queue card.
    */
   resetExecutingCount(cwd: string, expectedSlot: number): void {
-    const currentSlot = this.executingInfo.get(cwd)?.slotId;
+    const lane = this.peek(cwd);
+    const currentSlot = lane?.executing?.slotId;
     if (currentSlot !== expectedSlot) {
       getLogger().debug(
         `[queue-manager] resetExecutingCount skip (stopped task settled, slot advanced) cwd=${cwd} expectedSlot=${expectedSlot} currentSlot=${currentSlot ?? 'none'}`,
@@ -1119,7 +1088,7 @@ export class QueueManager {
     }
     // only reset and grant an interrupt slot when there is actually a
     // pending/executing task.
-    const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
+    const currentCount = lane?.pendingOrExecuting ?? 0;
     if (currentCount === 0) {
       getLogger().debug(`[queue-manager] resetExecutingCount no-op (count already 0) cwd=${cwd}`);
       return;
@@ -1128,14 +1097,9 @@ export class QueueManager {
     // any; defensive against a count without an executing task). `Set.add`
     // dedupes repeated resets of the same slot.
     const slot = currentSlot;
-    this.pendingOrExecutingCount.set(cwd, 0);
+    if (lane) lane.pendingOrExecuting = 0;
     if (slot !== undefined) {
-      let interrupted = this.interruptedSlots.get(cwd);
-      if (!interrupted) {
-        interrupted = new Set();
-        this.interruptedSlots.set(cwd, interrupted);
-      }
-      interrupted.add(slot);
+      lane?.interruptedSlots.add(slot);
       getLogger().debug(
         `[queue-manager] reset pendingOrExecutingCount cwd=${cwd} interruptedSlot=${slot}`,
       );
@@ -1150,7 +1114,7 @@ export class QueueManager {
    * The slot id of the task currently executing in this cwd (if any).
    */
   getExecutingSlot(cwd: string): number | undefined {
-    return this.executingInfo.get(cwd)?.slotId;
+    return this.peek(cwd)?.executing?.slotId;
   }
 
   /**
@@ -1160,7 +1124,7 @@ export class QueueManager {
    * callers cannot mutate the live record.
    */
   getExecutingInfo(cwd: string): ExecutingInfo | undefined {
-    const info = this.executingInfo.get(cwd);
+    const info = this.peek(cwd)?.executing;
     return info ? { ...info } : undefined;
   }
 }

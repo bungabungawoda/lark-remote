@@ -11,6 +11,7 @@ import { agentDisplayName, cardButton } from '../../card/card-shared.js';
 import { buildSessionHistoryCard, paginationBar } from '../../card/card-helpers.js';
 import { pageInfo } from '../paging.js';
 import { clampInt } from '../../common/clamp.js';
+import { getLogger } from '../../logger/index.js';
 
 export const AUTO_RESUME_MAX_EVENTS = 5;
 export const RESUME_PAGE_SIZE = 5;
@@ -427,6 +428,9 @@ function resumeList(
     page = loadResumePage(reader, cwd, pageSize, offset);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    getLogger().warn(
+      `[lark-remote] resume list failed agent=${agentKind} cwd=${cwd} offset=${offset}: ${msg}`,
+    );
     return { text: `读取 ${agentDisplayName(agentKind)} session 列表失败: ${msg}` };
   }
   const { sessions: allSessions, total, pageOffset } = page;

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getLogger } from './logger/index.js';
 import { sleep } from './common/sleep.js';
+import { isPidAlive } from './common/process.js';
 
 /**
  * Self-restart without an external watchdog/cron: the only process that can
@@ -88,9 +89,7 @@ export async function waitForPreviousInstance(): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0) return;
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-    } catch {
+    if (!isPidAlive(pid)) {
       getLogger().info(`[restart] previous instance pid=${pid} exited, continuing startup`);
       return;
     }

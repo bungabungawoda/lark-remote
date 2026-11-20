@@ -24,12 +24,10 @@
 
 import type { ApprovalView, UserQuestion } from '../../types.js';
 import type {
-  AgentThoughtChunkEvent,
   ElicitationCreateParams,
   ElicitationEnumOption,
   ElicitationPropertySchema,
   RequestPermissionParams,
-  ToolCallEvent,
   ToolCallUpdateEvent,
 } from '../../common/acp/protocol-types.js';
 import { deriveAcpAvailableDecisions } from '../../common/acp/acp-approval.js';
@@ -44,37 +42,7 @@ import {
 
 export class QoderAcpTranslator extends BaseAcpTranslator {
   protected readonly logTag = 'qoder-acp-translator';
-
-  protected override handleAgentThoughtChunk(
-    event: AgentThoughtChunkEvent,
-    _sessionId: string,
-  ): AcpTranslatorEvent[] {
-    return [
-      {
-        type: 'assistant',
-        message: {
-          content: [
-            {
-              type: 'thinking',
-              thinking: event.content.text,
-              ...(event.messageId ? { itemId: event.messageId } : {}),
-            },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-  }
-
-  /**
-   * tool args 不从 content text 提取（qoder 的 content 语义未验证，按「可能
-   * 带输出快照」的保守口径，防止把输出当命令渲染——codebuddy 同款）。
-   */
-  protected override extractToolCallArgsText(
-    _event: ToolCallEvent | ToolCallUpdateEvent,
-  ): string | undefined {
-    return undefined;
-  }
+  protected readonly toolArgsFromContent = false;
 
   protected override handleRequestPermission(
     requestId: number | string,

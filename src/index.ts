@@ -306,7 +306,7 @@ function createSessionReaders(
 /**
  * 按 agent 家族注册 runner factory。
  *
- * factory 一律从 configContainer 读最新 config（bridge.setConfig() +
+ * factory 一律从 registry 读最新 config（bridge.setConfig() +
  * clearRunners() 后运行时改动生效）；`latest()` 未接线时回退启动快照。
  *
  * 每个 factory 的构造逻辑抽到模块级命名函数（显式传 RunnerFactoryDeps 状态），
@@ -320,7 +320,7 @@ interface RunnerFactoryDeps {
   readers: AgentSessionReaders;
 }
 
-// Claude factory reads from configContainer (not closure) so runtime
+// Claude factory reads from the registry (not closure) so runtime
 // config changes (model, effort, stopGraceMs) take effect after
 // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
 function claudeRunnerOptions(deps: RunnerFactoryDeps, cwdOpt: { cwd: string }) {
@@ -392,7 +392,7 @@ function opencodeRunnerOptions(deps: RunnerFactoryDeps) {
 // Register PiRpcRunner.
 // factory 闭包必须读最新 config 而不是启动时的快照，否则 /config 保存后
 // provider 等字段对 pi 不生效：config 引用放在可变容器里（见上文
-// setConfigContainer），factory 每次从容器取最新值。
+// registry），factory 每次取最新值。
 // PiSessionReader 的创建与注册见 registerSessionReaders。
 function piRunnerOptions(deps: RunnerFactoryDeps, cwdOpt: { cwd: string }) {
   const piConf = getAgentConfig(deps.latest(), 'pi');
@@ -567,12 +567,12 @@ function logAgentProbeFailure(err: unknown): void {
   getLogger().warn(`[probe] background probe failed: ${(err as Error).message}`);
 }
 
-/** runner factory 取最新 config 的唯一入口（container 未接线时回退启动快照）。 */
+/** runner factory 取最新 config 的唯一入口（未更新时回退启动快照）。 */
 function createConfigLatest(
   agentRegistry: AgentRegistry,
   config: ReturnType<typeof loadConfig>,
 ): () => AppConfig {
-  return () => (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
+  return () => agentRegistry.getLatestConfig(config);
 }
 
 /** One global DSH per machine/DSH_HOME：provider 箭头在模块级函数内定义。 */
@@ -597,12 +597,8 @@ function initializeRunner(
 } {
   const agentRegistry = new AgentRegistry();
 
-  // 单点化：runner factory 取最新 config 的唯一入口（语义保持，
-  // container 未接线时回退启动快照）。
+  // 单点化：runner factory 取最新 config 的唯一入口（未更新时回退启动快照）。
   const latest = createConfigLatest(agentRegistry, config);
-
-  // 用可变容器存储 config 引用，registry 持有容器引用，factory 从容器读取最新值。
-  agentRegistry.setConfigContainer({ current: config });
 
   // One global DSH per machine/DSH_HOME. This resolver reuses a listening
   // process or starts `dsh web` detached; it never owns the child's lifetime.
@@ -869,12 +865,9 @@ async function restoreLastSession(app: WiredApp): Promise<void> {
 
   logger.info(`[startup] auto-resuming persisted session ${sessionIdToResume} in ${restoredCwd}`);
   const startupReader = sessionReaderRegistry.get(config.defaultAgent);
-  sessionStore.setSessionIdAndCwd(
-    restoredContact.userId,
-    config.defaultAgent,
-    sessionIdToResume,
-    restoredCwd,
-  );
+  // Bump the epoch so writebacks from a previous process (same persisted session)
+  // are rejected after startup takes ownership of the pointer.
+  sessionStore.bumpSessionEpoch(restoredContact.userId, config.defaultAgent);
   const content = startupReader.readSessionContent(sessionIdToResume, restoredCwd);
   // 该会话可能仍有在途 turn（上一个实例退出/崩溃后留在常驻 host 里）。
   // 不取消、不接管，但必须在卡上说明，否则用户会把它当"卡住了"。
@@ -920,7 +913,7 @@ async function restoreLastSession(app: WiredApp): Promise<void> {
         agentKind: config.defaultAgent,
       },
       // Compact 能力探测与 bridge 侧一致（runner 有 runCompact 才渲染）。
-      bridge.hasRunCompact(restoredCwd, config.defaultAgent),
+      bridge.hasRunCompact(config.defaultAgent),
       stillRunning,
     );
   } catch (err) {

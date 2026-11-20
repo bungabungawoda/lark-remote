@@ -70,6 +70,15 @@ export class PiRpcClient {
     return !this._disposed && !this.transport.closed;
   }
 
+  get disposed(): boolean {
+    return this._disposed;
+  }
+
+  markDisposed(): void {
+    this._disposed = true;
+    this._ready = false;
+  }
+
   /** Start the transport. Throws ConnectionLostError if spawn fails (ENOENT). */
   async connect(): Promise<void> {
     const events = {

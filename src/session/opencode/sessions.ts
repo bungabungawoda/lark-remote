@@ -18,7 +18,7 @@
 
 import { spawnProcessSync } from '../../platform/spawn.js';
 import fs from 'node:fs';
-import { bestEffortUnlink } from '../../common/fs.js';
+import { bestEffortClose, bestEffortUnlink } from '../../common/fs.js';
 import os from 'node:os';
 import path from 'node:path';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
@@ -1125,11 +1125,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       } as const;
 
       const run = (args: string[]): OpencodeCliResult => {
-        if (fd !== undefined) {
-          try {
-            fs.closeSync(fd);
-          } catch {}
-        }
+        bestEffortClose(fd, 'opencode export reopen');
         fd = fs.openSync(tmp, 'w');
         return spawnProcessSync(this.binary, args, {
           ...exportOpts,
@@ -1161,11 +1157,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       }
       return fs.readFileSync(tmp, 'utf-8');
     } finally {
-      if (fd !== undefined) {
-        try {
-          fs.closeSync(fd);
-        } catch {}
-      }
+      bestEffortClose(fd, 'opencode export');
       bestEffortUnlink(tmp);
     }
   }

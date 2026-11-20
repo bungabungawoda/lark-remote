@@ -3,6 +3,9 @@ import type { AgentEvent } from '../types.js';
 import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
+/** Default cap for one JSONL line / partial line (10 MB). */
+export const DEFAULT_JSONL_LINE_BYTES = 10 * 1024 * 1024;
+
 /** Options for {@link createJSONLStream}. */
 interface JSONLStreamOptions {
   onParseError?: (line: string) => void;
@@ -47,6 +50,7 @@ function notify(state: JSONLStreamState): void {
 
 /** Flush trailing partial line and mark the stream finished (end/close/error 共用). */
 function flushAndFinish(state: JSONLStreamState): void {
+  if (state.done) return;
   // decoder.end() 吐出被 chunk 边界切开的最后一个多字节字符的残余字节
   //（无残尾时返回空串）：不加这句，末尾被切开的字符会凭空丢失。
   const tail = state.decoder.end();
@@ -203,7 +207,7 @@ export function createJSONLStream(
     resumeThreshold: options?.resumeThreshold ?? Math.max(0, Math.floor(pauseThreshold / 2)),
     paused: false,
     // 单条 never-newline 流的 fragment 上限（10MB），防内存无界增长。
-    partialByteLimit: 10 * 1024 * 1024,
+    partialByteLimit: DEFAULT_JSONL_LINE_BYTES,
     stdout,
     options,
   };

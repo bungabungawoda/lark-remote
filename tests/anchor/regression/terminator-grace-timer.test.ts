@@ -47,8 +47,10 @@ describe('Terminator clears the grace-period timer after early exit', () => {
 
     // Spy on global clearTimeout (grace timer must be cleared after early exit).
     const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
     const stopPromise = terminator.stop(mockProc, { immediate: false });
+    const graceTimer = setTimeoutSpy.mock.results.at(-1)?.value;
 
     // Fire 'exit' so the race resolves true (process exited before grace).
     for (const cb of exitListeners) cb(0, null);
@@ -59,6 +61,7 @@ describe('Terminator clears the grace-period timer after early exit', () => {
     // race resolved via the 'exit' branch — no dangling timer keeps the
     // event loop alive. RED today: clearTimeout is never called for the
     // grace timer, so it lingers until graceMs.
-    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(graceTimer).toBeDefined();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(graceTimer);
   });
 });

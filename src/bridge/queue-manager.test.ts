@@ -828,22 +828,8 @@ describe('QueueManager lane state lifecycle', () => {
     releaseTask();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const state = qm as unknown as {
-      queues: Map<string, Promise<void>>;
-      queuedTasks: Map<string, unknown[]>;
-      pendingOrExecutingCount: Map<string, number>;
-      executingInfo: Map<string, unknown>;
-      interruptedSlots: Map<string, Set<number>>;
-      taskReplacements: Map<string, Map<string, () => Promise<void>>>;
-      taskRunHolds: Map<string, Map<string, unknown>>;
-    };
-    expect(state.queues.has(tmpDir)).toBe(false);
-    expect(state.queuedTasks.has(tmpDir)).toBe(false);
-    expect(state.pendingOrExecutingCount.has(tmpDir)).toBe(false);
-    expect(state.executingInfo.has(tmpDir)).toBe(false);
-    expect(state.interruptedSlots.has(tmpDir)).toBe(false);
-    expect(state.taskReplacements.has(tmpDir)).toBe(false);
-    expect(state.taskRunHolds.has(tmpDir)).toBe(false);
+    const state = qm as unknown as { lanes: Map<string, unknown> };
+    expect(state.lanes.has(tmpDir)).toBe(false);
   });
 
   it('keeps a historical cwd lane while its workspace still has an active run', async () => {
@@ -851,8 +837,8 @@ describe('QueueManager lane state lifecycle', () => {
     qm.enqueue(tmpDir, async () => {});
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const state = qm as unknown as { queues: Map<string, Promise<void>> };
-    expect(state.queues.has(tmpDir)).toBe(true);
+    const state = qm as unknown as { lanes: Map<string, unknown> };
+    expect(state.lanes.has(tmpDir)).toBe(true);
   });
 
   it('keeps a lane while a metadata-free task is still waiting in its queue', async () => {
@@ -865,11 +851,11 @@ describe('QueueManager lane state lifecycle', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     qm.enqueue(tmpDir, async () => {});
 
-    const state = qm as unknown as { queues: Map<string, Promise<void>> };
-    expect(state.queues.has(tmpDir)).toBe(true);
+    const state = qm as unknown as { lanes: Map<string, unknown> };
+    expect(state.lanes.has(tmpDir)).toBe(true);
 
     releaseFirst();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(state.queues.has(tmpDir)).toBe(false);
+    expect(state.lanes.has(tmpDir)).toBe(false);
   });
 });

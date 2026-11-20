@@ -30,6 +30,8 @@ import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { bestEffortUnlink } from './common/fs.js';
+import { isPidAlive } from './common/process.js';
+import { sleep } from './common/sleep.js';
 import { isWin32 } from './platform/select.js';
 import { binaryName, verifyPidIdentityVerdict, type IdentityVerdict } from './platform/identity.js';
 
@@ -48,35 +50,6 @@ const MAX_ACQUIRE_ATTEMPTS = 10;
 /** 每轮退避 5–25ms（含抖动），让并发启动的进程错开而不是持续碰撞。 */
 function acquireBackoffMs(): number {
   return 5 + Math.floor(Math.random() * 20);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Probe whether a pid is alive.
- *  - process.kill(pid, 0) returning normally → alive.
- *  - ESRCH (no such process) → dead.
- *  - EPERM (operation not permitted) → the process EXISTS but is owned by
- *    another user; we just lack permission to signal it. Returning true here
- *    is correct: the single instance that owns the lock is still running, so
- *    we must refuse to acquire. Previously EPERM was swallowed as "not
- *    running", allowing a second instance to overwrite the lock.
- *  - EINVAL / other → conservative true (do not clobber a lock we cannot
- *    prove is stale).
- */
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    // EPERM and any unexpected error → assume alive (never clobber a lock
-    // we cannot disprove is held by a running instance).
-    return true;
-  }
 }
 
 /** 锁持有者身份判定（测试注入点）；默认 = platform/identity 的真实查询。 */

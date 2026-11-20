@@ -12,42 +12,17 @@ import { isRunTerminal, type RunTerminal } from '../card/run-state.js';
 import { AGENT_KINDS } from '../agent-kinds.js';
 import type { AgentKind } from '../agent-kinds.js';
 import { supportsCompact } from '../runner/types.js';
+import { hasSessionContent } from '../session/session-content.js';
 import type { BridgeChannel, CommandContext, CommandResult } from './index.js';
 import type { ActiveRun, IdleWatchdog } from './index.js';
 
 /**
- * 单点化：`'runCompact' in runner` 鸭子探测
- * codex app-server + kimi/opencode ACP runner 满足。
+ * Compact 能力的唯一判据是声明表。声明与实现的一致性由
+ * `src/runner/runner-structure.test.ts` 的矩阵用例保证：新增 runner 漏实现
+ * `runCompact` 会在测试期失败，而不是在运行期静默隐藏按钮。
  */
-function runnerHasRunCompact(runner: Runner): boolean {
-  return (
-    'runCompact' in runner && typeof (runner as Record<string, unknown>).runCompact === 'function'
-  );
-}
-
-/**
- * 已告警过的能力不一致 kind。能力表（`COMPACT_CAPABILITY`）是声明，runner 方法
- * 是实现；两者不一致是开发期缺陷，只在首次冲突时打 error，避免每次渲染刷屏。
- */
-const compactMismatchWarned = new Set<AgentKind>();
-
-/**
- * Compact 能力的双重门控：声明的能力表 && runner 实际实现。
- *
- * 只做鸭子探测会把「漏实现」降级成静默隐藏按钮（dsh 就这样漏了），所以声明表
- * 是必需项；只信声明表则可能渲染出点不动的死按钮，所以实现检查也保留。两者
- * 不一致时打 error 日志，让缺陷在运行日志里可见。
- */
-export function runnerSupportsCompact(runner: Runner, kind: AgentKind): boolean {
-  const declared = supportsCompact(kind);
-  const implemented = runnerHasRunCompact(runner);
-  if (declared !== implemented && !compactMismatchWarned.has(kind)) {
-    compactMismatchWarned.add(kind);
-    getLogger().error(
-      `[lark-remote] compact capability mismatch kind=${kind} declared=${declared} implemented=${implemented}`,
-    );
-  }
-  return declared && implemented;
+export function runnerSupportsCompact(kind: AgentKind): boolean {
+  return supportsCompact(kind);
 }
 
 /**
@@ -206,7 +181,7 @@ export class CompactLifecycle {
     activeRun: ActiveRun,
     ctx: CommandContext,
   ): void {
-    if (!runnerSupportsCompact(activeRun.runner, activeRun.agentKind)) return;
+    if (!runnerSupportsCompact(activeRun.agentKind)) return;
     if (activeRun.runner.lifetime !== 'workspace') return;
     const terminal = cardSession.currentState.terminal;
     // 与事件消费守卫、Compact 按钮共用同一份终态集合（run-state.ts）。
@@ -279,7 +254,7 @@ export class CompactLifecycle {
 
     // Check that the runner has runCompact method（声明表 && runner 实现）
     const runner = this.deps.getRunner(cwd, target.agentKind, { replaceStale: true });
-    if (!runnerSupportsCompact(runner, target.agentKind)) {
+    if (!runnerSupportsCompact(target.agentKind)) {
       await this.deps.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
     }
@@ -611,19 +586,20 @@ export class CompactLifecycle {
     try {
       content = this.deps.sessionReaderRegistry.get(agentKind).readSessionContent(sessionId, cwd);
     } catch (err) {
+      getLogger().warn(
+        `[lark-remote] compact: read session failed agent=${agentKind} sessionId=${sessionId} cwd=${cwd}:`,
+        err,
+      );
       await this.deps.sendResult(
         { text: `⚠️ 读取 session ${sessionId} 失败: ${errorMessage(err)}` },
         ctx,
       );
       return;
     }
-    if (
-      content.events.length === 0 &&
-      !content.usage &&
-      !content.aiTitle &&
-      !content.recap &&
-      !content.displayTitle
-    ) {
+    if (!hasSessionContent(content)) {
+      getLogger().info(
+        `[lark-remote] compact: session not found agent=${agentKind} sessionId=${sessionId} cwd=${cwd}`,
+      );
       await this.deps.sendResult(
         { text: `⚠️ 未找到 session ${sessionId}（当前目录: ${cwd}）` },
         ctx,
@@ -637,7 +613,7 @@ export class CompactLifecycle {
     // Check that the runner has runCompact（声明表 && runner 实现；
     // codex/kimi/opencode/pi/claude/dsh 均已实现）。
     const runner = this.deps.getRunner(cwd, agentKind);
-    if (!runnerSupportsCompact(runner, agentKind)) {
+    if (!runnerSupportsCompact(agentKind)) {
       await this.deps.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
     }

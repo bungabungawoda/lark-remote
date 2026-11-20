@@ -23,14 +23,13 @@ import {
   type AgentStopper,
 } from '../../../platform/agent-stopper.js';
 import { getLogger } from '../../../logger/index.js';
+import { awaitSpawnError } from '../await-spawn-error.js';
+import { DEFAULT_JSONL_LINE_BYTES } from '../jsonl-stream.js';
 
 /** 日志用的错误摘要（onClose 的 reason 仍是稳定分类码）。 */
 function describeErr(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
-
-/** Max bytes for a single line before we disconnect (10MB). */
-const MAX_LINE_BYTES = 10 * 1024 * 1024;
 
 /** Max bytes retained from stderr for diagnostics (64KB). */
 const MAX_STDERR_BYTES = 64 * 1024;
@@ -130,10 +129,7 @@ export class JsonlRpcTransport {
 
     if (proc.pid === undefined) {
       // ENOENT early check
-      const err = await new Promise<Error | undefined>((resolve) => {
-        proc.once('error', (e: Error) => resolve(e));
-        setTimeout(() => resolve(undefined), 5000);
-      });
+      const err = await awaitSpawnError(proc);
       this._closed = true;
       const reason = err ? `ENOENT: ${this.binary} not found` : `spawn failed: ${this.binary}`;
       events.onClose(reason);
@@ -192,9 +188,9 @@ export class JsonlRpcTransport {
       for (const line of lines) {
         if (line.length === 0) continue;
         // 上限量的是 UTF-8 字节：中文 1 单元 = 3 字节，用 line.length 会低估 2-3×
-        if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
+        if (Buffer.byteLength(line, 'utf8') > DEFAULT_JSONL_LINE_BYTES) {
           getLogger().error(
-            `[jsonrpc-transport] line exceeds ${MAX_LINE_BYTES} bytes, disconnecting`,
+            `[jsonrpc-transport] line exceeds ${DEFAULT_JSONL_LINE_BYTES} bytes, disconnecting`,
           );
           this.handleClose('parse_error');
           return;
@@ -323,8 +319,11 @@ export class JsonlRpcTransport {
     if (proc) {
       try {
         await this.terminator.stop(proc, { immediate: false });
-      } catch {
-        // Ignore stop errors — process may already be dead
+      } catch (err) {
+        // Process may already be dead; keep the failure visible for diagnosis.
+        getLogger().debug(
+          `[jsonrpc-transport] close stop failed binary=${this.binary}: ${String(err)}`,
+        );
       }
       if (proc.stdin && !proc.stdin.destroyed) {
         proc.stdin.end();

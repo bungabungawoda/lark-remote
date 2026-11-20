@@ -21,9 +21,9 @@ import {
 } from './card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './collapsible.js';
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
-import { truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
+import { truncateMarkdownTables } from './text-truncate.js';
 import { truncateUtf8, truncateUtf8WithOmissionMarker } from '../common/truncate.js';
-import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
+import { fitsCardBudget, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
@@ -38,29 +38,14 @@ const DEGRADED_THINKING_BYTES = 1_000;
 const DEGRADED_TOOL_KEEP = 3; // Degraded: keep last 3 tool panels
 const EXTREME_TOOL_KEEP = 1; // Extreme: keep last 1 tool panel
 
-// --- Budget estimate (先估后建) ---
-// 影子测量：估算 = 精确复刻 normal 路径将要渲染的 JSON 字节。面板外壳、statusRow、
-// summary、header、按钮全部实测（measureJson），块内容经与渲染相同的变换
-// （truncateUtf8 截断 + markdownDiv 的 escapeMarkdown + JSON.stringify）精确测量，
-// 不依赖任何转义因子或拍脑袋常数（第二轮：CJK/ASCII 转义双向精确）。
-const DEGRADED_THRESHOLD = 24_000; // 估算低于此值走正常路径（留 4KB 裕度，相对 CARD_BUDGET_BYTES=28000）；否则直接 degraded。调整时同步评估裕度是否仍覆盖估算偏差
-
-/** 精确测量对象经 JSON.stringify 后的 UTF-8 字节数。 */
-function measureJson(obj: unknown): number {
-  return Buffer.byteLength(JSON.stringify(obj), 'utf8');
-}
-
-/** markdownDiv('', 'notation') 的序列化字节（空内容 div 的常量开销，估算时复用）。 */
-const EMPTY_MD_DIV_BYTES = measureJson(markdownDiv('', 'notation'));
-
 /**
  * Compact 按钮可见性：到达任意终态即可压缩。
  * 异常退出（error/interrupted/idle_timeout）时上下文往往更大，更需要压缩后
  * 再继续，因此不再要求 resultSubtype==='success'。compaction 卡
  * （operationKind='compaction'）永不显示，防止递归 Compact。
  *
- * 能力门控（compactSupported !== false）与执行侧 `'runCompact' in runner`
- * 鸭子探测对齐：claude 走 stream-json，不发射 turn_started，operationKind
+ * 能力门控（compactSupported !== false）由声明式能力表给出：claude 走
+ * stream-json，不发射 turn_started，operationKind
  * 恒 undefined——若以 operationKind==='turn' 作门控，claude 终态卡永远拿
  * 不到按钮。compaction 卡的「防递归」仍由 operationKind
  * 保证，两者是不同质的判断。
@@ -201,8 +186,8 @@ export interface RunCardRenderOptions {
   agentKind?: string;
   /**
    * Whether the terminal-state Compact button may be rendered. Defaults to true.
-   * The bridge passes `runner 有 runCompact`（与 resume 卡 / auto-resume 卡的
-   * hasRunCompact 探测一致），保证「有能力才渲染」：claude（stream-json，
+   * The bridge passes the declared capability（与 resume 卡 / auto-resume 卡
+   * 一致），保证「有能力才渲染」：claude（stream-json，
    * 无 turn_started → operationKind undefined）同样能拿到按钮。
    */
   compactSupported?: boolean;
@@ -299,13 +284,12 @@ function mergeNoticesIntoContent(
   return items;
 }
 
-/** 每个块的截断后内容（thinking/plan/text），测量与渲染共用（建议项）。 */
+/** 每个块的截断后内容（thinking/plan/text），渲染时复用。 */
 type GroupContentPrepared = Map<BlockGroup, string>;
 
 /**
- * 单次截断：把每个超限块（thinking/plan/text）的最终渲染内容算出来，供
- * estimateCardBytes 与 buildChronologicalContent 共用。此前影子测量与正式渲染
- * 各自 truncateUtf8 一次（双倍截断）；现在截断只发生在 prepare 阶段。
+ * 单次截断：把每个超限块（thinking/plan/text）的最终渲染内容算出来，
+ * 供 buildChronologicalContent / final-answer 路径复用。
  */
 function prepareGroupContent(groups: BlockGroup[]): GroupContentPrepared {
   const prepared = new Map<BlockGroup, string>();
@@ -752,7 +736,7 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
  * 终态也保留状态行：耗时定格，DSH 的步数/上下文投影展示最后一次快照。
  * summary 的最终 usage 与状态行并存。
  *
- * 导出供窄屏守卫测试断言分段宽度（与 `estimateCardBytes` 同一惯例）。
+ * 导出供窄屏守卫测试断言分段宽度。
  */
 export function statusLine(state: RunState): string {
   const parts: string[] = [];
@@ -870,28 +854,8 @@ function bucketThinkingAndTool(blocks: RunBlock[]): {
 }
 
 /**
- * 影子测量：精确复刻 normal 路径（buildChronologicalContent + renderRunCard 的
- * 骨架）产物 stringify 后的字节数，避免"先建完整卡再丢弃"的浪费。
- *
- * 第一性原理：估算应当测量"将要渲染的内容"，而非近似它。
- * - 骨架（schema/config/header/statusRow/summary/buttons/spacer）用小对象实测
- *   （measureJson），不依赖固定常数。
- * - 块内容经与渲染完全相同的变换后精确测量：truncateUtf8 截断 →
- *   markdownDiv 的 escapeMarkdown（反斜杠 2×）→ JSON.stringify。因此 CJK
- *   （3 字节/字符无转义）与 ASCII 高转义（\n/" 膨胀）双向精确，无需转义因子。
- * - tool 块直接 measureJson(renderTool(...))——与渲染共用同一函数，无复制。
- * - 块结构基于 groupBlocks（与渲染一致，连续 text 合并），保证合并语义一致。
- *
- * 唯一系统性低估：elements 数组元素间逗号/括号 ~n+1 字节（忽略，4KB 裕度内）。
- *
- * 注意：估算只是优化路径选择，不替代最终 stringify 兜底。即使估算说"低于阈值"
- * 走正常路径，renderRunCard 仍会 stringify 确认 ≤28KB；若估算低估，仍 fallback
- * 到 degraded（安全网不丢）。
- */
-/**
  * 镜像对单源：thinking/plan/file_change 三个 collapsible 面板组的
- * { title, expanded, border, content } 描述，估算（measurePanelBytes）与渲染
- * （collapsibleMarkdownPanel）共用——此前同一套标题/opIcon/内容模板写两遍。
+ * { title, expanded, border, content } 描述，供 renderContentGroups 渲染。
  * text（renderTextBlock）与 tool（renderTool）形态特殊，由调用方各自处理；
  * 返回 null 表示该组不是 collapsible 面板。
  */
@@ -928,95 +892,6 @@ function describePanelGroup(
   return null;
 }
 
-/** 导出供测试断言估算精度（估算 ≈ 实际渲染字节，见 tests/anchor/run-card/run-card.test.ts）。 */
-export function estimateCardBytes(
-  state: RunState,
-  options: RunCardRenderOptions = {},
-  shared?: { groups?: BlockGroup[]; prepared?: GroupContentPrepared },
-): number {
-  // renderRunCard 传入共享 groups/prepared 时直接复用（截断只做一次）；
-  // 独立调用（测试/预算探针）时自建，行为与原先一致。
-  const groups = shared?.groups ?? groupBlocks(state.blocks);
-  const prepared = shared?.prepared ?? prepareGroupContent(groups);
-  // 与 buildChronologicalContent 同源：估算必须测量"将要渲染的内容"，而正常
-  // 路径会按节点预算省略最旧的组（不模拟这一步会系统性高估）。
-  const { visible, omitted } = selectVisibleGroups(groups);
-  const baseOmitted = state.omittedBlocks ?? 0;
-  const outputMax = toolOutputBudget(state);
-
-  // 卡片外壳直接实测 assembleRunCard 空元素产物（schema/config/header/body 结构
-  // 与正式渲染完全一致）；status/summary/操作行同样实测渲染结构。
-  // 注：审批区（approvalArea）不参与估算——待审批通常在途且体积小，超预算由
-  // renderRunCard 的 stringify 兜底捕获。
-  let total =
-    measureJson(assembleRunCard(state, options, [])) +
-    measureJson(statusRow(state)) +
-    measureJson(buildSummaryContent(state, { includeNotices: false })) +
-    measureJson(actionRow(state, options));
-
-  // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源）
-  let renderedAny = false;
-  if (baseOmitted + omitted > 0) {
-    renderedAny = true;
-    total += measureJson(markdownDiv(`_💡 已省略 ${baseOmitted + omitted} 个早期步骤_`));
-  }
-  for (const group of visible) {
-    if (group.kind === 'tool') {
-      renderedAny = true;
-      // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
-      total += measureJson(renderTool(group.tool, outputMax));
-      continue;
-    }
-    if (group.kind === 'text') {
-      const content = prepared.get(group) ?? '';
-      if (!content.trim()) continue;
-      renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const header = `💬 **输出**${ts ? ` (${ts})` : ''}`;
-      total += measurePanelBytes(header, true, 'grey', content);
-      continue;
-    }
-    const spec = describePanelGroup(group, prepared);
-    if (!spec) continue;
-    renderedAny = true;
-    total += measurePanelBytes(spec.title, spec.expanded, spec.border, spec.content);
-  }
-
-  // notices 在正常路径作为普通消息内联渲染（与 buildChronologicalContent 同源，
-  // renderNoticeRow 单源）；行体积与位置无关，直接按条累加。
-  for (const notice of state.notices ?? []) {
-    renderedAny = true;
-    total += measureJson(renderNoticeRow(notice));
-  }
-
-  if (!renderedAny) {
-    total += measureJson(markdownDiv('_暂无输出_'));
-  }
-
-  return Math.ceil(total);
-}
-
-/**
- * 精确测量一个 collapsible 面板的序列化字节。
- * 外壳（title/expanded/border/elements 结构）用空 content 面板实测，内容单独
- * 经 markdownDiv（含 escapeMarkdown）精确测量——与渲染完全一致。
- */
-function measurePanelBytes(
-  title: string,
-  expanded: boolean,
-  border: PanelBorder,
-  content: string,
-): number {
-  const shell = collapsibleMarkdownPanel({
-    title,
-    expanded,
-    border,
-    content: '',
-    textSize: 'notation',
-  });
-  return measureJson(shell) - EMPTY_MD_DIV_BYTES + measureJson(markdownDiv(content, 'notation'));
-}
-
 /**
  * CardKit 2.0 renderer - simplified for streaming (no tabs)
  */
@@ -1041,32 +916,18 @@ export function renderRunCardDetailed(
 
 /** 时间线卡：finalAnswer 未就绪时的常规流式渲染（不是历史兼容路径）。 */
 function renderTimelineRunCard(state: RunState, options: RunCardRenderOptions): object {
-  // 先估后建：用廉价估算预测是否超 28KB 预算，明显超预算直接跳过完整卡构建走
-  // degraded。groups/prepared 只算一次，测量与正式渲染共用同一份截断结果，
-  // 避免影子测量 + 正式渲染对每个超限块双倍截断。
   const groups = groupBlocks(state.blocks);
   const prepared = prepareGroupContent(groups);
-  const estimate = estimateCardBytes(state, options, { groups, prepared });
+  const elements: object[] = [
+    statusRow(state),
+    ...buildChronologicalContent(state, prepared, groups, state.omittedBlocks ?? 0),
+    ...buildSummaryContent(state, { includeNotices: false }),
+    ...actionRow(state, options),
+    ...approvalArea(state),
+  ];
+  const card = assembleRunCard(state, options, elements);
+  if (withinRunCardBudget(card)) return card;
 
-  // 构建完整卡（仅在估算低于阈值时，避免大 state 浪费 render + stringify）
-  if (estimate < DEGRADED_THRESHOLD) {
-    const elements: object[] = [
-      statusRow(state),
-      ...buildChronologicalContent(state, prepared, groups, state.omittedBlocks ?? 0),
-      ...buildSummaryContent(state, { includeNotices: false }),
-      ...actionRow(state, options),
-      ...approvalArea(state),
-    ];
-
-    const card = assembleRunCard(state, options, elements);
-
-    // Check budget — stringify 兜底（估算可能低估，仍保留安全网）。
-    // 两个维度都必须过：字节（28KB）与元素总数（飞书 11310，实测 203 节点上限）。
-    if (withinRunCardBudget(card)) return card;
-    // 超预算 → 继续走 degraded（不 return，fallthrough）
-  }
-
-  // 估算 ≥ 阈值 或 完整卡超预算 — 走 degraded 渲染
   const degradedCard = assembleRunCard(state, options, buildDegradedElements(state, options));
   if (withinRunCardBudget(degradedCard)) {
     return degradedCard;
@@ -1271,17 +1132,9 @@ function renderContentGroups(
   return elements;
 }
 
-/**
- * Run 卡片的双预算检查：UTF-8 字节 ≤ 28KB **且** 元素数 ≤ `MAX_CARD_ELEMENTS`。
- *
- * 为什么两个维度都要查：字节超限来自内容长（截断即可），元素超限来自元素多
- * （必须删元素）。一张只有几十个短文本的卡片可以远低于 28KB 却把飞书的元素
- * 总数撑爆（实测 24 行工具 + 24 个展开正文 = 103 个元素 → 11310），只查字节
- * 的安全网抓不到它。
- */
+/** 同时满足飞书字节、元素、组件三轴预算。 */
 function withinRunCardBudget(card: object): boolean {
-  if (countCardElements(card) > MAX_CARD_ELEMENTS) return false;
-  return Buffer.byteLength(JSON.stringify(card), 'utf8') <= CARD_BUDGET_BYTES;
+  return fitsCardBudget(card);
 }
 
 /** Build content in chronological order using groupBlocks to interleave thinking/text/tools. */

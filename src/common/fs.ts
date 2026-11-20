@@ -23,6 +23,16 @@ export function bestEffortUnlink(path: string): void {
   }
 }
 
+/** Close a file descriptor on a cleanup path; failures are logged, never thrown. */
+export function bestEffortClose(fd: number | undefined, context: string): void {
+  if (fd === undefined) return;
+  try {
+    fs.closeSync(fd);
+  } catch (err) {
+    getLogger().debug(`[fs] close failed context=${context}: ${String(err)}`);
+  }
+}
+
 /**
  * win32 句柄占用重试：rename/unlink 目标被
  * 其他句柄持有时报 EPERM/EBUSY（共享冲突），短暂退避后重试通常即可成功。

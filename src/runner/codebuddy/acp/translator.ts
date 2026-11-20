@@ -28,7 +28,6 @@ import type { ApprovalView, UserQuestion } from '../../types.js';
 import type {
   AgentThoughtChunkEvent,
   RequestPermissionParams,
-  ToolCallEvent,
   ToolCallUpdateEvent,
   UsageUpdateEvent,
 } from '../../common/acp/protocol-types.js';
@@ -48,48 +47,17 @@ export const CODEBUDDY_QUESTION_METHOD = '_codebuddy.ai/question';
 
 export class CodebuddyAcpTranslator extends BaseAcpTranslator {
   protected readonly logTag = 'codebuddy-acp-translator';
+  protected readonly toolArgsFromContent = false;
 
   /** 本 turn 的 live flow 累加器（translator 按 turn 新建 → 实例即 turn 生命周期）。 */
   private readonly turnFlow: TurnFlow = { input: 0, output: 0, cacheRead: 0, total: 0 };
 
   /**
    * thinking 增量的分块身份：CodeBuddy 真机（2.142.0）的 agent_thought_chunk
-   * **不带** `messageId` 字段——块身份藏在 `_meta['codebuddy.ai/messageId']`
-   * （同一 LLM 请求的 reasoning 增量共享它）。缺了 itemId 时卡片 thinking
-   * 分块退化，所以两处都取。
+   * 不带 `messageId`，块身份藏在 `_meta['codebuddy.ai/messageId']`。
    */
-  protected override handleAgentThoughtChunk(
-    event: AgentThoughtChunkEvent,
-    _sessionId: string,
-  ): AcpTranslatorEvent[] {
-    // 真机不带 messageId 时退回 _meta；两条通道合并为一个可选 itemId。
-    const itemId = event.messageId ?? thoughtItemIdFromMeta(event);
-    return [
-      {
-        type: 'assistant',
-        message: {
-          content: [
-            {
-              type: 'thinking',
-              thinking: event.content.text,
-              ...(itemId ? { itemId } : {}),
-            },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-  }
-
-  /**
-   * tool args 不从 content text 提取（返回 undefined → 基类兜底改用 rawInput
-   * 归一化）。CodeBuddy 的 content 语义未验证，按「可能带输出快照」的保守
-   * 口径，防止把输出当命令渲染——同 opencode 的防污染理由。
-   */
-  protected override extractToolCallArgsText(
-    _event: ToolCallEvent | ToolCallUpdateEvent,
-  ): string | undefined {
-    return undefined;
+  protected override thoughtItemId(event: AgentThoughtChunkEvent): string | undefined {
+    return event.messageId ?? thoughtItemIdFromMeta(event);
   }
 
   /**

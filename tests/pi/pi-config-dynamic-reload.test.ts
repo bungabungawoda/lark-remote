@@ -64,25 +64,23 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
    * TEST 1: 验证修复后的动态配置加载
    *
    * 修复后的行为：
-   * 1. registry 有 configContainer
-   * 2. factory 从 container 读取最新 config
-   * 3. config.save 更新 container.current
+   * 1. registry 保存最新 config
+   * 2. factory 从 registry 读取最新 config
+   * 3. config.save 更新 registry 快照
    * 4. 再次 getRunner() 时 factory 读到新 provider
    */
   it('SHOULD create new PiRunner instance after clearRunners (not reuse stale singleton)', () => {
     // 1. 模拟 lark-remote 启动时的初始化
     const initialConfig = createInitialConfig();
 
-    // 2. 创建 registry 并设置 configContainer（修复后的正确方式）
+    // 2. 创建 registry 并写入初始 config
     const registry = new AgentRegistry();
-    const configContainer = { current: initialConfig };
-    registry.setConfigContainer(configContainer);
+    registry.updateConfig(initialConfig);
 
-    // 3. 注册 factory，它从 configContainer 读取最新 config（修复后的正确实现）
+    // 3. 注册 factory，它从 registry 读取最新 config
 
     registry.register('pi', (_workspace: string) => {
-      const container = registry.getConfigContainer();
-      const latestConfig = container?.current as ReturnType<typeof createInitialConfig>;
+      const latestConfig = registry.getLatestConfig(initialConfig);
       const piConf = getAgentConfig(latestConfig, 'pi');
       return new PiRpcRunner({
         cwd: _workspace,
@@ -97,11 +95,11 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
     expect(runner1.getStatusInfo().provider).toBe('Volcano');
 
     // 5. 模拟用户通过 /config 卡片保存 pi.provider = 'lt'
-    // 这会更新 configContainer.current（这是 setConfig 做的事情）
+    // 这会更新 registry 快照（这是 setConfig 做的事情）
     const configAfterSave = setConfigValues(configPath, initialConfig, {
       'pi.provider': 'lt',
     });
-    configContainer.current = configAfterSave; // 模拟 bridge.setConfig() 的行为
+    registry.updateConfig(configAfterSave); // 模拟 bridge.setConfig() 的行为
 
     // 验证配置已保存
     const piConfig = getAgentConfig(configAfterSave, 'pi');

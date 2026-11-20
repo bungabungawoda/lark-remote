@@ -418,6 +418,42 @@ export abstract class BaseAcpRunner<
   // Turn orchestration
   // =========================================================================
 
+  /** Acquire the per-turn connection and install the turn's ownership hooks. */
+  private async openTurnConnection(
+    opts: SpawnOptions,
+  ): Promise<{ anchor: TurnAnchor<JsonRpcClient>; client: JsonRpcClient }> {
+    const anchor = await this.acquireForTurn(opts.cwd, () =>
+      this.connectionManager.acquire(opts.cwd),
+    );
+    this.onConnectionAcquired(opts);
+    this.installTurnHooks(anchor);
+    return { anchor, client: anchor.client };
+  }
+
+  /** Emit the self-produced turn_started event and remember its id. */
+  private emitTurnStarted(translator: TTranslator, sessionId: string, prefix: string): void {
+    const turnId = `${prefix}-${Date.now()}`;
+    const turnStarted = translator.produceTurnStarted(sessionId, turnId);
+    this.currentTurnId = turnId;
+    this.pushEvents([turnStarted]);
+  }
+
+  /** Send the prompt RPC. The response is held for the whole turn. */
+  private startPrompt(
+    client: JsonRpcClient,
+    sessionId: string,
+    text: string,
+  ): Promise<SessionPromptResult> {
+    this.promptSettled = false;
+    const promptPromise = client.request<SessionPromptParams, SessionPromptResult>(
+      'session/prompt',
+      { sessionId, prompt: [{ type: 'text', text }] },
+      Number.POSITIVE_INFINITY, // response held for the whole turn; idle watchdog guards liveness
+    );
+    this.promptSent = true;
+    return promptPromise;
+  }
+
   /**
    * Acquire the connection and set up the turn: session/new (new session) or
    * session/resume (existing sessionId) → applyTurnSettings → session/prompt.
@@ -426,12 +462,7 @@ export abstract class BaseAcpRunner<
     this.authFailureCwd = opts.cwd;
     // 本轮回调归属锚点（代际 + client）由 acquireForTurn 捕获：旧轮迟到的
     // prompt 结果/通知在新轮开始时 stopRequested 已被重置，只有这对值能识别它。
-    const anchor = await this.acquireForTurn(opts.cwd, () =>
-      this.connectionManager.acquire(opts.cwd),
-    );
-    this.onConnectionAcquired(opts);
-    this.installTurnHooks(anchor);
-    const { client } = anchor;
+    const { anchor, client } = await this.openTurnConnection(opts);
 
     let sessionId: string;
     const plan = this.turnSessionPlan(opts);
@@ -465,27 +496,12 @@ export abstract class BaseAcpRunner<
     const translator = this.createTranslator();
     this.currentTranslator = translator;
 
-    // Emit turn_started before prompt
-    const turnId = `turn-${Date.now()}`;
-    const turnStarted = translator.produceTurnStarted(sessionId, turnId);
-    this.currentTurnId = turnId;
-    this.pushEvents([turnStarted]);
+    this.emitTurnStarted(translator, sessionId, 'turn');
 
     // Send the prompt. The prompt request races with notifications (the
     // server streams session/update before the prompt response); the
     // response settles the turn and is translated into the result event.
-    const promptParams: SessionPromptParams = {
-      sessionId,
-      prompt: [{ type: 'text', text: message }],
-    };
-
-    this.promptSettled = false;
-    const promptPromise = client.request<SessionPromptParams, SessionPromptResult>(
-      'session/prompt',
-      promptParams,
-      Number.POSITIVE_INFINITY, // response held for the whole turn; idle watchdog guards liveness
-    );
-    this.promptSent = true;
+    const promptPromise = this.startPrompt(client, sessionId, message);
 
     promptPromise.then(
       this.forCurrentTurn(anchor, 'late prompt result', (result) =>
@@ -505,12 +521,7 @@ export abstract class BaseAcpRunner<
     this.authFailureCwd = opts.cwd;
     yield* this.executeTurn(opts, async () => {
       // 同 setupTurn：acquireForTurn 捕获代际锚点，installTurnHooks 守卫 dispatch。
-      const anchor = await this.acquireForTurn(opts.cwd, () =>
-        this.connectionManager.acquire(opts.cwd),
-      );
-      this.onConnectionAcquired(opts);
-      this.installTurnHooks(anchor);
-      const { client } = anchor;
+      const { client } = await this.openTurnConnection(opts);
 
       const sessionId = opts.sessionId;
       if (!sessionId) {
@@ -540,31 +551,13 @@ export abstract class BaseAcpRunner<
       translator.setOperationKind('compact');
       this.currentTranslator = translator;
 
-      // Emit turn_started with operationKind='compaction' before the prompt.
-      const turnId = `compact-${Date.now()}`;
-      const turnStarted = translator.produceTurnStarted(sessionId, turnId);
-      this.currentTurnId = turnId;
-      this.pushEvents([turnStarted]);
-
-      const promptParams: SessionPromptParams = {
-        sessionId,
-        prompt: [{ type: 'text', text: '/compact' }],
-      };
+      this.emitTurnStarted(translator, sessionId, 'compact');
 
       // Baseline is captured BEFORE the prompt fires (kimi §5.2: a begin
       // record landing after the fire must count as "new activity").
       const baselineTotalCount = this.compactBaseline(sessionId, opts);
 
-      this.promptSettled = false;
-      // ACP holds the session/prompt response for the ENTIRE turn, so the
-      // RPC-level timeout must not apply — turn liveness is guarded by the
-      // rolling idle watchdog instead.
-      const promptPromise = client.request<SessionPromptParams, SessionPromptResult>(
-        'session/prompt',
-        promptParams,
-        Number.POSITIVE_INFINITY,
-      );
-      this.promptSent = true;
+      const promptPromise = this.startPrompt(client, sessionId, '/compact');
 
       this.onCompactPromptFired(promptPromise, translator, sessionId, opts, baselineTotalCount);
     });

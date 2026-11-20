@@ -14,52 +14,21 @@
  * 守住的失败模式：基类无限等待，测试会超时失败（vitest 默认 5s test timeout）。
  */
 import { describe, it, expect, vi } from 'vitest';
-import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
-import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
+import { awaitSpawnError } from '../../../src/runner/common/await-spawn-error.js';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
-import { makeTempDir } from '../../lib/temp-dir.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
 
-class TestRunner extends SpawningRunner {
-  // pidDir 是 production 真会 mkdir + 写 pid 文件的位置。默认给本用例独占的
-  // mkdtemp 目录：固定 '/tmp/...' 在 win32 上会落到仓库外的 D:\tmp
-  // （跨进程共享 + 兜底 sweep 扫不到）。见 temp-dir-hygiene 守卫。
-  constructor(pidDir = makeTempDir('lark-base-await-spawn-')) {
-    super({
-      pidDir,
-      cwd: 'test',
-      logTag: 'test-runner',
-    });
-    this.binary = 'fake-agent';
-  }
-  protected buildArgv(_opts: SpawnOptions): string[] {
-    return ['--fake'];
-  }
-  protected translate(_rawEvent: unknown, _ctx: unknown): AgentEvent | AgentEvent[] | null {
-    return null;
-  }
-  // Expose protected hook for testing.
-  public callAwaitSpawnError(
-    proc: import('node:child_process').ChildProcess,
-  ): Promise<Error | undefined> {
-    return this.awaitSpawnError(proc);
-  }
-}
-
-describe('SpawningRunner.awaitSpawnError finite timeout', () => {
+describe('awaitSpawnError finite timeout', () => {
   it('test_anchor_base_await_spawn_error_times_out_when_no_error_event', async () => {
     // A fake proc that NEVER emits 'error' — simulates silent spawn failure.
     const proc = createMockProc();
-    const runner = new TestRunner();
 
     // Must resolve (to undefined) within a finite bound, NOT hang forever.
-    // Current base class: `proc.once('error', resolve)` → never resolves →
-    // vitest test timeout (5s default) kills it = RED.
     const start = Date.now();
-    const result = await runner.callAwaitSpawnError(proc);
+    const result = await awaitSpawnError(proc);
     const elapsed = Date.now() - start;
 
     expect(result).toBeUndefined();

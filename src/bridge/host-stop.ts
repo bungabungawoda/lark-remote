@@ -4,6 +4,8 @@ import type { AppConfig } from '../config/index.js';
 import type { HostStopOutcome, Runner } from '../runner/types.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
 import type { CommandContext, CommandResult } from './index.js';
+import { getLogger } from '../logger/index.js';
+import { hasSessionContent } from '../session/session-content.js';
 
 /**
  * Stop 的宿主轮次入口（DSH）。
@@ -138,16 +140,17 @@ export class HostTurnStop {
       const content = this.deps.sessionReaderRegistry
         .get(agentKind)
         .readSessionContent(sessionId, cwd);
-      if (
-        content.events.length === 0 &&
-        !content.usage &&
-        !content.aiTitle &&
-        !content.recap &&
-        !content.displayTitle
-      ) {
+      if (!hasSessionContent(content)) {
+        getLogger().info(
+          `[lark-remote] host stop: session not found agent=${agentKind} sessionId=${sessionId} cwd=${cwd}`,
+        );
         return { error: `⚠️ 未找到 session ${shortSessionId(sessionId)}（当前目录: ${cwd}）` };
       }
     } catch (err) {
+      getLogger().warn(
+        `[lark-remote] host stop: read session failed agent=${agentKind} sessionId=${sessionId} cwd=${cwd}:`,
+        err,
+      );
       return {
         error: `⚠️ 读取 session ${shortSessionId(sessionId)} 失败: ${(err as Error).message}`,
       };
@@ -156,15 +159,16 @@ export class HostTurnStop {
   }
 
   private async stop(target: HostTurnStopTarget): Promise<HostTurnStopResult> {
-    if (target.agentKind !== 'dsh') {
-      return { status: 'unsupported', sessionId: target.sessionId, agentKind: target.agentKind };
-    }
     let runner: Runner;
     try {
       // replaceStale：控制动作必须打到当前配置指向的宿主，别用 /config 之前
       // 的旧 client。getRunner 自身保证有本地 activeRun 时不替换实例。
       runner = this.deps.getRunner(target.cwd, target.agentKind, { replaceStale: true });
     } catch (err) {
+      getLogger().warn(
+        `[lark-remote] host stop: getRunner failed sessionId=${target.sessionId} cwd=${target.cwd}:`,
+        err,
+      );
       return {
         status: 'unconfirmed',
         sessionId: target.sessionId,

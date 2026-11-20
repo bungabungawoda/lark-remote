@@ -750,7 +750,7 @@ export function buildResumeLikeCard(
  */
 export function canCompactSession(host: CommandRouter, agentKind: string, cwd?: string): boolean {
   if (!cwd) return false;
-  return host.bridge.hasRunCompact(cwd, agentKind as AgentKind);
+  return host.bridge.hasRunCompact(agentKind as AgentKind);
 }
 
 /**

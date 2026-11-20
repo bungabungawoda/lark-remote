@@ -40,7 +40,7 @@ function makeRunCardConnector(
   });
 }
 import * as cardBudget from '../../../src/card/card-budget.js';
-import { renderRunCard, estimateCardBytes } from '../../../src/card/run-renderer.js';
+import { renderRunCard } from '../../../src/card/run-renderer.js';
 import type { RunState } from '../../../src/card/run-state.js';
 import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
@@ -341,36 +341,9 @@ describe('RunCardSession push coalescing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// renderRunCard budget estimate = shadow measurement (CJK)
+// renderRunCard budget behavior (CJK)
 // ---------------------------------------------------------------------------
 
-/**
- * ANCHOR (影子测量：估算 = 测量将要渲染的内容) — `estimateCardBytes` 必须精确
- * 复刻 normal 路径的产物字节，而不是近似。
- *
- * 意图（必须完整保留）：
- * 第二轮把估算从「字符数/字节数 × 转义因子 + 拍脑袋常数」改为
- * **影子测量**：骨架（schema/header/statusRow/summary/按钮）小对象实测，块内容经
- * 与渲染完全相同的变换（truncateUtf8 截断 + markdownDiv 的 escapeMarkdown +
- * JSON.stringify）精确测量。CJK（3 字节/字符无转义）与 ASCII 高转义（\n/" 反斜杠
- * 膨胀）双向精确，无需任何因子。
- *
- * 三类断言：
- * ① **精度不变量**：对各类状态（ASCII/CJK/高转义/tool/plan/file_change/空），
- *    `estimateCardBytes(state)` 与实际渲染卡 stringify 字节数差 ≤ 200 字节
- *    （实测 1~2 字节）。若有人回退到字符数（CJK 低估 2.5×）或 ×1.2 因子（CJK
- *    高估 20%），差值达数千字节 → 本 anchor 变 RED。
- * ② **CJK 卡实际放得下 → 正常路径全量渲染**：估算 ≈ 20.9KB < 阈值，thinking
- *    全部保留（旧 ×1.2 估算 ~32KB ≥ 阈值会误降级丢 thinking——修复该 UX 缺口）。
- * ③ **巨量 CJK → 产物仍 ≤28KB**：正确性底线（字符串化兜底 + 降级链）。
- *
- * 缺失会导致什么：
- * - 估算失真 → CJK 长会话每次事件多付「建完整卡 + stringify + 丢弃」（低估），
- *   或本可完整展示的卡被误降级丢早期 thinking/tool（高估）。
- *
- * 依据：第一性原理分析——「不要为 CJK 特设逻辑，让估算与
- * 测量对齐，CJK 自然正确」。
- */
 type AnyBlock = Record<string, unknown>;
 
 function makeState(blocks: AnyBlock[]): RunState {
@@ -384,84 +357,7 @@ function makeState(blocks: AnyBlock[]): RunState {
   };
 }
 
-function jsonBytes(o: unknown): number {
-  return Buffer.byteLength(JSON.stringify(o), 'utf8');
-}
-
-describe('renderRunCard budget estimate = shadow measurement', () => {
-  it('test_anchor_estimate_matches_rendered_bytes_within_tolerance', () => {
-    const ts = '2026-07-31T10:00:00.000Z';
-    const cases: Array<[string, AnyBlock[]]> = [
-      ['ascii-text', [{ kind: 'text', content: 'y'.repeat(5000), timestamp: ts }]],
-      ['cjk-text', [{ kind: 'text', content: '丙'.repeat(2500), timestamp: ts }]],
-      [
-        'cjk-mixed',
-        [
-          {
-            kind: 'thinking',
-            content: 'HEAD-THINK-1-' + '戊'.repeat(900),
-            active: false,
-            timestamp: ts,
-          },
-          {
-            kind: 'thinking',
-            content: 'HEAD-THINK-2-' + '戊'.repeat(900),
-            active: false,
-            timestamp: ts,
-          },
-          {
-            kind: 'thinking',
-            content: 'HEAD-THINK-3-' + '戊'.repeat(900),
-            active: false,
-            timestamp: ts,
-          },
-          { kind: 'text', content: 'HEAD-TEXT-1-' + '丙'.repeat(2500), timestamp: ts },
-          { kind: 'text', content: 'HEAD-TEXT-2-' + '丙'.repeat(2500), timestamp: ts },
-        ],
-      ],
-      ['high-escape', [{ kind: 'text', content: '\\'.repeat(3000), timestamp: ts }]],
-      [
-        'tool',
-        [
-          {
-            kind: 'tool',
-            tool: {
-              id: 't1',
-              name: 'Bash',
-              input: { command: 'echo hi' },
-              output: 'o'.repeat(1200),
-              status: 'ok',
-              startedAt: ts,
-              completedAt: ts,
-            },
-          },
-        ],
-      ],
-      ['plan', [{ kind: 'plan', content: '计划内容'.repeat(200), active: false, timestamp: ts }]],
-      [
-        'file_change',
-        [
-          {
-            kind: 'file_change',
-            path: '/a/b.ts',
-            operation: 'edit',
-            diff: 'diff'.repeat(500),
-            timestamp: ts,
-          },
-        ],
-      ],
-      ['empty', []],
-    ];
-
-    for (const [name, blocks] of cases) {
-      const state = makeState(blocks);
-      const estimate = estimateCardBytes(state);
-      // 该状态估算 < 阈值 → renderRunCard 走正常路径返回完整卡，actual = 正常卡字节
-      const actual = jsonBytes(renderRunCard(state));
-      expect(Math.abs(estimate - actual), name).toBeLessThanOrEqual(200);
-    }
-  });
-
+describe('renderRunCard budget behavior', () => {
   it('test_anchor_cjk_fits_renders_full_not_overdegraded', () => {
     // 估算 ≈ 20.9KB < 24000 → 正常路径：thinking1/2/3 全量保留，无 omission hint
     const state = makeState([
@@ -494,8 +390,6 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
         timestamp: '2026-07-31T09:12:00.000Z',
       },
     ]);
-
-    expect(estimateCardBytes(state)).toBeLessThan(24_000);
 
     const json = JSON.stringify(renderRunCard(state));
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
@@ -531,8 +425,6 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
     }
     const state = makeState(blocks);
 
-    expect(estimateCardBytes(state)).toBeGreaterThanOrEqual(24_000);
-
     const card = renderRunCard(state);
     const json = JSON.stringify(card);
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
@@ -541,18 +433,16 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
 });
 
 // ---------------------------------------------------------------------------
-// renderRunCard budget estimate — large state degrades correctly
+// renderRunCard budget — large state degrades correctly
 // ---------------------------------------------------------------------------
 
 /**
- * ANCHOR (预算估算上界 + 保守性) — renderRunCard 对明显超 28KB 的大 RunState
+ * ANCHOR (预算上界 + 保守性) — renderRunCard 对明显超 28KB 的大 RunState
  * 必须走降级路径，保证产物 ≤28KB 且含 omission hint。
  *
  * 意图（必须完整保留）：
- * renderRunCard 在构建完整卡对象之前先用廉价估算预测是否超
- * 28KB 预算，明显超预算直接跳过完整卡构建走 degraded。本 anchor 不断言"是否
- * 先估后建"（实现细节，行为层无法观测），而是断言**降级行为正确**——这是无论
- * 优化前后都必须成立的行为契约：
+ * renderRunCard 构建完整卡后检查 28KB / 元素 / 组件预算，超限走 degraded。
+ * 本 anchor 断言**降级行为正确**：
  *
  * ① 卡片产物 ≤28KB（不触发飞书 11310 单卡 5 table / 28KB 上限错误）—— 正确性底线
  * ② 走了 degraded 路径：含合并后的 omission hint（`已省略 7 个早期步骤`，
@@ -564,14 +454,14 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
  * - 若绿用 `return True` 或硬编码跳过降级作弊，联合断言（≤28KB + 含 omission
  *   hint + 不含早期 thinking）会露馅：要么超 28KB，要么缺 omission hint。
  *
- * 依据：（renderRunCard 预算估算优化）。
+ * 依据：飞书单卡预算约束。
  *
  * 构造：7 个大 thinking（每个 ~2.5KB）+ 5 个大 tool output（每个 ~3.5KB）
  * + 大文本（~8KB），完整卡远超 28KB，参照 run-renderer.test.ts 的
  * `degrades thinking: keeps last 2` fixture 构造方式。
  */
-describe('renderRunCard budget estimate', () => {
-  it('test_anchor_run_card_budget_estimate_degrades_large_state', () => {
+describe('renderRunCard budget', () => {
+  it('test_anchor_run_card_budget_degrades_large_state', () => {
     const state: RunState = {
       runId: 'run-budget-estimate',
       terminal: 'done',

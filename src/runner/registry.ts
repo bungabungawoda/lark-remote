@@ -11,32 +11,26 @@ import type { Runner } from './index.js';
  * workspace-lifetime (long-lived session); dsh is HTTP+WS direct connection
  * (no local subprocess). Each factory returns a runner per call.
  *
- * Dynamic config reload: factory can read latest config via registry's
- * configContainer, enabling runtime config changes to take effect.
+ * Dynamic config reload: factories read the latest config through the
+ * registry, enabling runtime config changes to take effect.
  */
 export class AgentRegistry {
   private readonly factories = new Map<AgentKind, (cwd: string) => Runner>();
-  /** Container for runtime config updates (pi provider dynamic reload). */
-  private configContainer?: { current: unknown };
+  /** Latest config snapshot for runtime reloads. */
+  private latestConfig?: unknown;
 
   register(kind: AgentKind, factory: (cwd: string) => Runner): void {
     this.factories.set(kind, factory);
   }
 
-  /**
-   * Set config container reference. Call after bridge config is updated.
-   * Factory functions can read latest config from here.
-   */
-  setConfigContainer(container: { current: unknown }): void {
-    this.configContainer = container;
+  /** Update the config snapshot read by factories. */
+  updateConfig(config: unknown): void {
+    this.latestConfig = config;
   }
 
-  /**
-   * Get the config container for factory functions to read latest config.
-   * Returns undefined if not set.
-   */
-  getConfigContainer(): { current: unknown } | undefined {
-    return this.configContainer;
+  /** Latest config for factories, falling back to the startup snapshot. */
+  getLatestConfig<T>(fallback: T): T {
+    return (this.latestConfig as T | undefined) ?? fallback;
   }
 
   get(kind: AgentKind, cwd: string): Runner {

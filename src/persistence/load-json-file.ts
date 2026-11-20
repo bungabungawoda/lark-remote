@@ -14,7 +14,11 @@ export function loadJsonFile<T>(filePath: string, fallback: T): T {
     const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw) as T;
   } catch (err) {
-    getLogger().warn(`[persistence] failed to load ${filePath}, using fallback:`, err);
+    getLogger().warn(
+      `[persistence] failed to load ${filePath}, using fallback: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return fallback;
   }
 }

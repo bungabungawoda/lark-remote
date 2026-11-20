@@ -1,27 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import path from 'node:path';
 import type { Runner, AgentRunner, AgentEvent } from '../runner/index.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
-import { getAgentConfig, type AppConfig } from '../config/index.js';
-import {
-  defaultCodebuddyProductConfigCacheDir,
-  ensureCodebuddyRegion,
-  invalidateCodebuddyCatalogCache,
-  invalidateCodebuddyRegion,
-  scheduleCodebuddyRegionRedetect,
-} from '../config/codebuddy-catalog.js';
-import {
-  readCodebuddyModelError,
-  recordCodebuddyModelRejection,
-  recordCodebuddyModelSuccess,
-  resolveCodebuddyModel,
-} from '../config/codebuddy-model-state.js';
-import {
-  codebuddyProjectsDir,
-  encodeCodebuddyProjectDirName,
-} from '../session/codebuddy/sessions.js';
+import type { AppConfig } from '../config/index.js';
+import { CodebuddyRuntime } from './codebuddy-runtime.js';
 import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
@@ -81,17 +64,6 @@ const MAX_CACHED_RUNNER_WORKSPACES = 10;
  * message forever.
  */
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
-
-/**
- * 401 终态的恢复指引。只追加到 errorMsg 文本上，不动最终回答卡片结构
- * （仓库对 run-card 有硬闸）。用户看到的是「发生了什么 + 下一步做什么」，
- * 而不是一句裸的 401 后面继续 auto-resume 同一个死会话。
- */
-const CODEBUDDY_AUTH_RECOVERY_HINT =
-  '\n\n【已自动重置】登录态或区域已失效：旧会话、模型目录与长驻连接均已清除。' +
-  '\n区域正在后台重新判定，下一条消息会新建会话并自动使用判定结果。' +
-  '\n若仍失败，请在终端执行 codebuddy /login 重新登录；也可在 /config 的「区域」里手动选 internal / external 锁定端点。' +
-  '\n重新打开 /config 可刷新模型列表。';
 
 /**
  * 完成通知卡的标题 / 配色 / 结果行。
@@ -449,6 +421,7 @@ export class Bridge {
    * 临时目录，避免读写真实家目录。
    */
   private readonly codebuddyHome?: string;
+  private readonly codebuddyRuntime: CodebuddyRuntime;
 
   constructor(deps: BridgeDeps) {
     this.connector = deps.connector;
@@ -459,6 +432,12 @@ export class Bridge {
     this.agentRegistry = deps.agentRegistry;
     this.sessionReaderRegistry = deps.sessionReaderRegistry;
     this.codebuddyHome = deps.codebuddyHome;
+    this.codebuddyRuntime = new CodebuddyRuntime({
+      getConfig: () => this.config,
+      sessionStore: this.sessionStore,
+      clearRunners: () => this.clearRunners(),
+      codebuddyHome: this.codebuddyHome,
+    });
 
     this.queueManager = new QueueManager(
       (cwd) => this.activeRuns.has(cwd),
@@ -522,7 +501,7 @@ export class Bridge {
        * 而 `/stop` 会先摘槽位让守卫失效，stale 便留到再下一轮。
        *
        * 仅在开跑路径（forwardToClaude / streamCompact）与宿主轮次的 stop
-       * 传 true：hasRunCompact、killBackgroundJob 这类「借 runner 看一眼」
+       * 传 true：killBackgroundJob 这类「借 runner 看一眼」
        * 的调用不能触发实例替换。
        */
       replaceStale?: boolean;
@@ -582,11 +561,7 @@ export class Bridge {
   /** Update the config reference (call after `/config set` reloads). */
   setConfig(config: AppConfig): void {
     this.config = config;
-    // 同步更新 registry 的 configContainer，让 factory 能读取最新 config
-    const container = this.agentRegistry.getConfigContainer();
-    if (container) {
-      container.current = config;
-    }
+    this.agentRegistry.updateConfig(config);
   }
 
   /**
@@ -619,14 +594,9 @@ export class Bridge {
     return this.getRunner(cwd) as AgentRunner;
   }
 
-  /**
-   * Whether the runner for the given agent kind has runCompact capability.
-   * Used by router for compact button gating (duck-typing
-   * instead of hardcoding agentKind === 'codex').
-   */
-  hasRunCompact(cwd: string, kind: AgentKind = this.config.defaultAgent): boolean {
-    const runner = this.getRunner(cwd, kind);
-    return runnerSupportsCompact(runner, kind);
+  /** Whether the given agent kind declares runCompact capability. */
+  hasRunCompact(kind: AgentKind = this.config.defaultAgent): boolean {
+    return runnerSupportsCompact(kind);
   }
 
   /** 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
@@ -727,43 +697,24 @@ export class Bridge {
   getAgentRunOptions(agent: AgentKind = this.config.defaultAgent): {
     model?: string;
     effort?: string;
-    thinking?: string;
     reasoningEffort?: string;
   } {
     const agents = this.config.agents;
-    const result: { model?: string; effort?: string; thinking?: string; reasoningEffort?: string } =
-      {};
-
-    switch (agent) {
-      case 'claude':
-        // Claude uses top-level claude config
-        if (this.config.claude) {
-          if (this.config.claude.model) result.model = this.config.claude.model;
-          if (this.config.claude.effort) result.effort = this.config.claude.effort;
-        }
-        break;
-      case 'codex':
-        if (agents?.codex?.model) result.model = agents.codex.model;
-        if (agents?.codex?.reasoningEffort) result.reasoningEffort = agents.codex.reasoningEffort;
-        break;
-      case 'pi':
-        if (agents?.pi?.model) result.model = agents.pi.model;
-        if (agents?.pi?.thinking) result.thinking = agents.pi.thinking;
-        break;
-      case 'opencode':
-        // opencode model is set as provider/model in the constructor (defaultModel);
-        // returning bare modelID here would override it with a provider-less string.
-        break;
-      case 'qoder':
-        // qoder 与 codex 同字段：reasoningEffort 走 SpawnOptions.reasoningEffort，
-        // session buildArgv 落到 --reasoning-effort；没有这个 case 时配置卡选的
-        // 模型只进 /status 展示、永远到不了 CLI（2026-11-05 实测缺口）。
-        if (agents?.qoder?.model) result.model = agents.qoder.model;
-        if (agents?.qoder?.reasoningEffort) result.reasoningEffort = agents.qoder.reasoningEffort;
-        break;
+    if (agent === 'claude') {
+      return {
+        model: this.config.claude?.model,
+        effort: this.config.claude?.effort,
+      };
     }
-
-    return result;
+    if (agent === 'codex') {
+      return {
+        model: agents?.codex?.model,
+        reasoningEffort: agents?.codex?.reasoningEffort,
+      };
+    }
+    // Other runners read model/settings in their constructors; per-turn values
+    // would either be ignored or override a provider-qualified model.
+    return {};
   }
 
   /**
@@ -1495,11 +1446,7 @@ export class Bridge {
     // 宿主 env 打错端点；401 后判定已作废，这里也会等进程内重判收尾。显式
     // 配置、已判定、探测超时都立即放行，不影响其他 agent。
     if (agentKind === 'codebuddy') {
-      const cbConf = getAgentConfig(this.config, 'codebuddy');
-      await ensureCodebuddyRegion(cbConf?.env, {
-        binary: cbConf?.acp?.binary,
-        hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
-      });
+      await this.codebuddyRuntime.ensureRegion();
     }
 
     // Resolve the runner BEFORE creating the run session so the exact instance
@@ -1646,9 +1593,9 @@ export class Bridge {
       renderOptions: {
         // Run card header shows the current agent name (e.g. "Claude · 思考中")
         agentKind,
-        // Compact 按钮能力门控与 resume 卡 / auto-resume 卡一致（hasRunCompact
-        // 鸭子探测）：claude（stream-json，无 turn_started）也能拿到按钮。
-        compactSupported: this.hasRunCompact(cwd, agentKind),
+        // Compact 按钮能力门控与 resume 卡 / auto-resume 卡一致：都读
+        // 声明式能力表。
+        compactSupported: this.hasRunCompact(agentKind),
         // 本轮 init 到达前，按钮是否仍有可压缩目标：开跑时 store 里已有会话
         // 才置 true。false 时按钮只在 state.sessionId 出现后渲染——否则
         // init 前被 /stop 的卡片会留下一个注定失败的按钮。
@@ -1782,23 +1729,16 @@ export class Bridge {
       return { sawResult: false, dropFromCard: true, preInitTerminal };
     }
 
-    // 401 是本轮上游明确给出的身份失效信号。只认当前轮的 live result：
-    // resume 重放的历史 result 不是本轮身份事实，不该触发重置。
-    if (!preInitResult && event.authFailure && agentKind === 'codebuddy') {
-      this.invalidateCodebuddyIdentity(event, { userId, agentKind, runId });
-    }
-
-    // 模型被上游拒绝（400 model [...] service info not found）与 401 是两类
-    // 不同的失效：登录态没坏，坏的是配置里的 model id。ACP 只回泛化的
-    // Internal error，真实原因只在会话 jsonl 里，因此按需回读。
-    if (!preInitResult && agentKind === 'codebuddy') {
-      if (event.subtype === 'success') {
-        recordCodebuddyModelSuccess(
-          resolveCodebuddyModel(getAgentConfig(this.config, 'codebuddy')?.model),
-        );
-      } else if (event.subtype === 'error') {
-        this.learnCodebuddyModelRejection(event, { userId, agentKind, runId, cwd: writeback.cwd });
-      }
+    // 401 / 模型拒绝只认当前轮的 live result：resume 重放的历史 result
+    // 不是本轮身份事实，不该触发重置（CodebuddyRuntime 内做 preInit 守卫）。
+    if (agentKind === 'codebuddy') {
+      this.codebuddyRuntime.onResult(event, {
+        preInitResult,
+        userId,
+        agentKind,
+        runId,
+        cwd: writeback.cwd,
+      });
     }
 
     usage.observeResult(event);
@@ -1824,111 +1764,7 @@ export class Bridge {
    * 在失效端点上重放 401。目录与区域由调用方刚刷新过，这里只清运行时状态。
    */
   resetCodebuddyRuntime(userId: string): void {
-    this.sessionStore.clearSessionId(userId, 'codebuddy');
-    this.clearRunners();
-    getLogger().warn('[lark-remote] codebuddy identity changed: session/runner reset');
-  }
-
-  /**
-   * CodeBuddy 身份失效协议：模型目录快照、持久 sessionId、runner 槽位都是
-   * 「当前登录身份 + 区域」的派生状态，必须一次性作废。
-   *
-   * 少了任意一份都会复现原故障：目录继续显示旧区域模型清单；/restart 的
-   * restoreLastSession() 把旧 sessionId 写回并 auto-resume 到同一个 401
-   * 会话；长驻 ACP 连接（runner 侧已 release）对应的 runner 实例仍被缓存。
-   * 上游 401 是唯一可信信号——不读 CLI 私有凭据、不猜凭据指纹。
-   */
-  private invalidateCodebuddyIdentity(
-    event: Extract<AgentEvent, { type: 'result' }>,
-    opts: { userId: string; agentKind: AgentKind; runId: string },
-  ): void {
-    const { userId, agentKind, runId } = opts;
-    invalidateCodebuddyCatalogCache();
-    // 自动判定的区域也必须作废：否则 clearRunners 后重建 runner 仍注入旧
-    // 区域，下一条消息会在同一个失效端点上重放 401。重启时重新双探针判定。
-    invalidateCodebuddyRegion();
-    // clearSessionId 会 bump epoch（连空→空也 bump），既阻止 auto-resume，
-    // 也让本轮 finalizeRun 的写回守卫不再把旧 sessionId 写回。cwd 保留。
-    this.sessionStore.clearSessionId(userId, agentKind);
-    // 活跃 cwd 只标 stale，finalizeRun 在 turn 收尾后安全 evict；不误杀在跑的
-    // 子进程（clearRunners 的既有语义）。
-    this.clearRunners();
-    // 进程内重判：用户重新 /login 后新凭据已落盘，重建连接即可用对区域，
-    // 不需要重启 lark-remote。schedule 内部有冷却窗口与 in-flight 串行，
-    // 上游持续 401 时不会反复 spawn 探针。binary 与 runner 同源。
-    const cbConf = getAgentConfig(this.config, 'codebuddy');
-    scheduleCodebuddyRegionRedetect(cbConf?.env, {
-      binary: cbConf?.acp?.binary,
-      hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
-    });
-    event.errorMessage = `${event.errorMessage ?? '上游认证失效'}${CODEBUDDY_AUTH_RECOVERY_HINT}`;
-    getLogger().warn(
-      `[lark-remote] codebuddy auth failure: catalog/region/session/runner invalidated, redetect scheduled runId=${runId}`,
-    );
-  }
-
-  /**
-   * 模型被上游拒绝时的自我校正。
-   *
-   * ACP 只把 400 压成 `Internal error`，账号可用清单只存在于会话 jsonl 的
-   * assistant 错误行（`Currently supported models for your account:`）。学到
-   * 清单后：配置里的 model 若不在清单内，按「上次成功 → 账号当前 → 偏好」
-   * 挑一个，并作废旧 session 与 runner 槽位，下一条消息用校正后的模型新建
-   * 会话——否则下一条会继续下发同一个被拒 id。
-   *
-   * 不自动重放本轮：卡片终态已经产出，静默重跑会让用户看到一次「消失的
-   * 错误」，也容易与已执行过的工具产生歧义。
-   */
-  private learnCodebuddyModelRejection(
-    event: Extract<AgentEvent, { type: 'result' }>,
-    opts: { userId: string; agentKind: AgentKind; runId: string; cwd: string },
-  ): void {
-    const cbConf = getAgentConfig(this.config, 'codebuddy');
-    // CodeBuddy 的会话目录固定 `~/.codebuddy/projects/<cwd 编码>/`（无配置项，
-    // 与 CodebuddySessionReader 同口径）。
-    const sessionFile = path.join(
-      codebuddyProjectsDir(this.codebuddyHome),
-      encodeCodebuddyProjectDirName(opts.cwd),
-      `${path.basename(event.session_id)}.jsonl`,
-    );
-    const learned = readCodebuddyModelError(sessionFile);
-    if (!learned) return;
-
-    if (learned.supported.length === 0) {
-      // 错误文本没带清单（非模型类错误）：不覆盖已知清单，只在能定位到
-      // 具体模型时给一句可执行的提示。
-      if (learned.model) {
-        event.errorMessage =
-          `${event.errorMessage ?? '上游拒绝该模型'}` +
-          `\n\n【提示】模型 ${learned.model} 可能不属于当前账号，请在 /config 换一个模型。`;
-      }
-      return;
-    }
-
-    const state = recordCodebuddyModelRejection({
-      model: learned.model,
-      supported: learned.supported,
-    });
-    if (!state) return;
-
-    const corrected = resolveCodebuddyModel(cbConf?.model);
-    if (!corrected || corrected === cbConf?.model) {
-      getLogger().info(
-        `[lark-remote] codebuddy model list learned (${state.supported.length} ids), configured model still valid runId=${opts.runId}`,
-      );
-      return;
-    }
-
-    const rejected = learned.model ?? cbConf?.model;
-    this.sessionStore.clearSessionId(opts.userId, opts.agentKind);
-    this.clearRunners();
-    event.errorMessage =
-      `${event.errorMessage ?? '上游拒绝该模型'}` +
-      `\n\n【已自动校正】模型 ${rejected ?? '(未配置)'} 不属于当前账号，已切换为 ${corrected}。` +
-      '\n请重发本条消息。';
-    getLogger().warn(
-      `[lark-remote] codebuddy model rejected: ${rejected ?? '(unknown)'} -> ${corrected}, session/runner invalidated runId=${opts.runId}`,
-    );
+    this.codebuddyRuntime.reset(userId);
   }
 
   /**
@@ -2441,9 +2277,8 @@ export class Bridge {
       const finalRenderOptions: RunCardRenderOptions = {
         agentKind: activeRun.agentKind,
         // 与 createRunSession 的 renderOptions 一致：fallback 卡也要按
-        // runner 能力门控 Compact 按钮（缺省 undefined = 显示按钮，
-        // DSH 等无 runCompact 的 agent 会渲染出点了报错的死按钮）。
-        compactSupported: this.hasRunCompact(cwd, activeRun.agentKind),
+        // 声明式能力表门控 Compact 按钮。
+        compactSupported: this.hasRunCompact(activeRun.agentKind),
         // 终态卡按「此刻是否真的有可压缩会话」渲染按钮，与记账用的是同一
         // 判据（本轮 sessionId 或 store 回退），避免按钮可见但记录不存在。
         sessionFallbackAvailable: !!(

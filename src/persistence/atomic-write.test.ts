@@ -69,17 +69,26 @@ describe('atomicWrite durability', () => {
     const filePath = path.join(dir, 'target.json');
     try {
       const fsyncSpy = vi.spyOn(fs, 'fsyncSync');
+      const openSpy = vi.spyOn(fs, 'openSync');
+      const renameSpy = vi.spyOn(fs, 'renameSync');
 
       atomicWrite(filePath, '{"a":1}');
 
       // 目标文件正常写入
       expect(fs.readFileSync(filePath, 'utf-8')).toBe('{"a":1}');
 
-      // 必须至少调用一次 fsyncSync（对 tmp fd 刷盘）
-      expect(fsyncSpy).toHaveBeenCalled();
-      expect(fsyncSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+      // fsync 必须作用在 tmp 文件的 fd 上，且发生在 rename 之前。
+      const tmpOpenIndex = openSpy.mock.calls.findIndex(([p]) => String(p).includes('.tmp-'));
+      expect(tmpOpenIndex).toBeGreaterThanOrEqual(0);
+      const tmpFd = openSpy.mock.results[tmpOpenIndex]!.value;
+      expect(fsyncSpy).toHaveBeenCalledWith(tmpFd);
+      expect(fsyncSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        renameSpy.mock.invocationCallOrder[0]!,
+      );
 
       fsyncSpy.mockRestore();
+      openSpy.mockRestore();
+      renameSpy.mockRestore();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

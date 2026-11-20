@@ -16,6 +16,7 @@ import { createTerminator, type Terminator } from '../../platform/terminator.js'
 import { agentStopperRegistry, type AgentStopper } from '../../platform/agent-stopper.js';
 import { SpawnHeartbeat } from './spawn-heartbeat.js';
 import { createJSONLStream } from './jsonl-stream.js';
+import { awaitSpawnError } from './await-spawn-error.js';
 import { DEFAULT_STOP_GRACE_MS } from '../../config/index.js';
 import type { SpawnOptions } from '../types.js';
 
@@ -28,15 +29,6 @@ import type { SpawnOptions } from '../types.js';
 const STDERR_TAIL_BYTES = 4000;
 /** Error thrown by `spawnChild` when the child process fails to spawn. */
 class SpawnChildError extends Error {}
-/**
- * Timeout (ms) for awaiting the spawn 'error' event when proc.pid === undefined
- * Node guarantees 'error' for ENOENT/EACCES, but some binaries
- * fail silently; the race keeps a silent failure from hanging the spawn lead-in
- * forever. Matches the 5s race kimi's override used before it was hoisted to
- * the base.
- */
-const SPAWN_ERROR_TIMEOUT_MS = 5000;
-
 /**
  * 进程级退出监听单例分发。
  *
@@ -256,26 +248,6 @@ export abstract class SpawningRunner {
   }
 
   /**
-   * Await the spawn 'error' event when proc.pid === undefined. Races a
-   * finite timeout against the 'error' event: Node guarantees
-   * 'error' for ENOENT/EACCES, but some binaries fail silently without ever
-   * emitting it. Without the race, the spawn lead-in hangs forever → the
-   * cwd serial queue never settles → permanent deadlock, and /stop
-   * can't recover (Terminator.stop returns early when pid === undefined).
-   * The timeout keeps the deadlock bounded.
-   */
-  protected awaitSpawnError(proc: ChildProcess): Promise<Error | undefined> {
-    return Promise.race([
-      new Promise<Error>((resolve) => {
-        proc.once('error', (err: Error) => resolve(err));
-      }),
-      new Promise<undefined>((resolve) =>
-        setTimeout(() => resolve(undefined), SPAWN_ERROR_TIMEOUT_MS),
-      ),
-    ]);
-  }
-
-  /**
    * Spawn the agent binary with the subclass's argv and run the shared spawn
    * lead-in: pid-undefined check, pid-file write, heartbeat start, and stderr
    * accumulation (tail-capped).
@@ -303,7 +275,7 @@ export abstract class SpawningRunner {
     );
 
     if (proc.pid === undefined) {
-      const spawnErr = await this.awaitSpawnError(proc);
+      const spawnErr = await awaitSpawnError(proc);
       if (spawnErr) {
         getLogger().error(
           `[${this.logTag}] spawn failed: ${spawnErr.message} binary=${this.binary} cwd=${opts.cwd}`,
@@ -540,7 +512,12 @@ export abstract class SpawningRunner {
         // 进程组/进程树」（posix kill(-pgid, SIGKILL) / win32 taskkill /T /F），
         // 退出路径上无法等待，也不需要优雅段。
         this.terminator.cleanupOnExit(this.currentProcess);
-      } catch {}
+      } catch (err) {
+        getLogger().warn(
+          `[${this.logTag}] exit cleanup failed pid=${this.currentProcess.pid}:`,
+          err,
+        );
+      }
     }
     this.unregisterStopper();
     bestEffortUnlink(this.pidFilePath);

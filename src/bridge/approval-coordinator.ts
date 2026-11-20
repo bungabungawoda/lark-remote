@@ -318,6 +318,7 @@ export class ApprovalCoordinator {
     if (this.allQuestionsAnswered(tracked)) {
       return this.respondQuestionAnswers(tracked, ctx);
     }
+    this.pushQuestionViewUpdate(ctx.requestId, tracked);
   }
 
   /**
@@ -726,6 +727,7 @@ export function decisionToApprovalAction(decision: string): ApprovalAction {
     case 'cancel':
       return { action: 'cancel' };
     default:
-      return { action: 'decline' };
+      getLogger().warn(`[lark-remote] unknown approval decision: ${decision}`);
+      throw new Error(`Unknown approval decision: ${decision}`);
   }
 }

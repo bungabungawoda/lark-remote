@@ -9,16 +9,17 @@
  * kimi accumulates wire deltas into turn_diff snapshots (snapshot semantics,
  * see KimiAcpTranslator header), opencode / codebuddy forward `assistant`
  * deltas directly — that is the DEFAULT handleAgentMessageChunk here; kimi
- * overrides it. thought chunks stay abstract (codebuddy reads the block id
- * from `_meta['codebuddy.ai/messageId']`).
+ * overrides it. thought chunks use one default delta handler; codebuddy only
+ * overrides the block id (from `_meta['codebuddy.ai/messageId']`).
  *
  * Extension points (all no-op or passthrough by default):
  *   handleAgentMessageChunk  — assistant text delta (default; kimi overrides)
- *   handleAgentThoughtChunk  — thinking delta (abstract)
+ *   handleAgentThoughtChunk  — thinking delta (default; kimi overrides)
  *   handleRequestPermission  — approval rendering (abstract)
  *   handleOtherServerRequest                          — extra reverse RPC (kimi: elicitation)
  *   extractToolResultContent                          — tool_result content (default: rawOutput)
- *   extractToolCallArgsText                           — streaming-args source (opencode: none)
+ *   extractToolCallArgsText                           — streaming-args source
+ *                                                       (opencode/codebuddy/qoder: none)
  *   buildToolUseUpdate                                — tool_use patch from tool_call_update
  *   onUsageSample                                     — extra usage bookkeeping (opencode: cost)
  */
@@ -235,14 +236,7 @@ interface AcpLiveUsage {
 }
 
 /** Usage update event for live token display. */
-interface AcpUsageEvent {
-  type: 'usage';
-  usage: AcpLiveUsage;
-  timestamp?: string;
-}
-
-export type AcpTranslatorEvent =
-  AgentEvent | AcpTurnStartedEvent | AcpUsageEvent | ApprovalRequestedEvent;
+export type AcpTranslatorEvent = AgentEvent | AcpTurnStartedEvent | ApprovalRequestedEvent;
 
 // =============================================================================
 // Translator base class
@@ -688,16 +682,22 @@ export abstract class BaseAcpTranslator {
    * accumulated args there (toolCallDeltaToSessionUpdate: content.text =
    * accumulator.args), and the approval handler relies on it.
    *
-   * opencode overrides this to return undefined: its tool_call/_update content
-   * is the shell OUTPUT snapshot (decompiled acp service `WP`), never args
-   * (args ride rawInput in `XC`/`BP`). Treating that output as args would
-   * corrupt approval command recovery — the hazard this hook exists to close.
+   * opencode/codebuddy/qoder disable `toolArgsFromContent`: their content may
+   * be an output snapshot, never args. Treating that output as args would
+   * corrupt approval command recovery.
    */
   protected extractToolCallArgsText(
     event: ToolCallEvent | ToolCallUpdateEvent,
   ): string | undefined {
-    return extractToolCallContentText(event.content);
+    return this.toolArgsFromContent ? extractToolCallContentText(event.content) : undefined;
   }
+
+  /**
+   * Whether tool args may be read from `content` text. Agents whose update
+   * content is an output snapshot (not args) set this to false; args then come
+   * from `rawInput` only.
+   */
+  protected readonly toolArgsFromContent: boolean = true;
 
   /**
    * tool_call_update → optional tool_use patch event. When an update carries
@@ -793,10 +793,36 @@ export abstract class BaseAcpTranslator {
     ];
   }
 
-  protected abstract handleAgentThoughtChunk(
+  /**
+   * Thinking delta → assistant thinking block. Default appends one delta;
+   * agents that need snapshot semantics (kimi) override the whole handler.
+   */
+  protected handleAgentThoughtChunk(
     event: AgentThoughtChunkEvent,
-    sessionId: string,
-  ): AcpTranslatorEvent[];
+    _sessionId: string,
+  ): AcpTranslatorEvent[] {
+    const itemId = this.thoughtItemId(event);
+    return [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'thinking',
+              thinking: event.content.text,
+              ...(itemId ? { itemId } : {}),
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+  }
+
+  /** Block identity for a thinking delta; agents with private metadata override. */
+  protected thoughtItemId(event: AgentThoughtChunkEvent): string | undefined {
+    return event.messageId;
+  }
 
   protected abstract handleRequestPermission(
     requestId: number | string,

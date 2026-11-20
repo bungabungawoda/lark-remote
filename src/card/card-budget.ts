@@ -247,6 +247,15 @@ function fitsBudget(bytes: number, elements: number, components: number): boolea
   );
 }
 
+/** 已序列化卡片是否同时满足飞书的字节、元素、组件三轴预算。 */
+export function fitsCardBudget(card: unknown): boolean {
+  return fitsBudget(
+    Buffer.byteLength(JSON.stringify(card), 'utf8'),
+    countCardElements(card),
+    countCardComponents(card),
+  );
+}
+
 /** 元素总数或组件总数是否超预算。 */
 function cardQuantityExceeded(card: CardNode): boolean {
   return (

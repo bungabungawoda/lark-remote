@@ -983,29 +983,7 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).toContain('"cmd":"new-session"');
   });
 
-  it('bridge wiring hides compact button when runner lacks runCompact', async () => {
-    // 对照组：无 runCompact 能力的 runner → 终态卡不渲染 Compact 按钮。
-    const runner = createStubRunner({
-      mode: 'streaming',
-      events: [
-        { type: 'system', subtype: 'init', session_id: 's-nc', cwd: tmpDir, model: 'opus' },
-        { type: 'result', subtype: 'success', session_id: 's-nc' },
-      ],
-    });
-    const { bridge, sessionStore, connector } = makeBridge({ runner });
-    sessionStore.setCwd(ctx.userId, tmpDir);
-
-    await bridge.forwardToClaude('hi', ctx);
-
-    const json = JSON.stringify(connector._cards.at(-1));
-    expect(json).not.toContain('"cmd":"compact"');
-    expect(json).toContain('"cmd":"new-session"');
-  });
-
-  it('dsh run card shows compact button once the runner implements runCompact', async () => {
-    // 回归：dsh 曾长期没有任何 runCompact 实现，能力又只靠鸭子探测——终态卡
-    // 直接不渲染按钮，用户侧只看到「少了一个按钮」。现在 dsh 走 commands/execute
-    // 实现压缩，能力表声明 + 实现都在，按钮必须出现。
+  it('dsh run card shows compact button from the declared capability table', async () => {
     const runner = createStubRunner({
       mode: 'streaming',
       events: [
@@ -1025,36 +1003,10 @@ describe('Bridge.forwardToClaude', () => {
 
     await bridge.forwardToClaude('hi', ctx);
 
-    expect(bridge.hasRunCompact(tmpDir, 'dsh')).toBe(true);
+    expect(bridge.hasRunCompact('dsh')).toBe(true);
     const json = JSON.stringify(connector._cards.at(-1));
     expect(json).toContain('"cmd":"compact"');
     expect(json).toContain('"cmd":"new-session"');
-  });
-
-  it('dsh run card hides compact button when the runner lacks runCompact (capability mismatch fails closed)', async () => {
-    // 对照组：声明表说 dsh 支持，runner 却没实现（回归/半成品接入）——按钮
-    // 仍然必须是隐藏的（fail closed），而不是渲染一个点不动的按钮。
-    const runner = createStubRunner({
-      mode: 'streaming',
-      events: [
-        { type: 'system', subtype: 'init', session_id: 's-dsh-nc', cwd: tmpDir, model: 'DSH' },
-        { type: 'result', subtype: 'success', session_id: 's-dsh-nc' },
-      ],
-    });
-    const config = AppConfigSchema.parse({
-      feishu: { appId: 'test', appSecret: 'test' },
-      claude: { model: 'opus', stopGraceMs: 5000 },
-      cwd: { default: '' },
-      defaultAgent: 'dsh',
-    });
-    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
-    sessionStore.setCwd(ctx.userId, tmpDir);
-
-    await bridge.forwardToClaude('hi', ctx);
-
-    expect(bridge.hasRunCompact(tmpDir, 'dsh')).toBe(false);
-    const json = JSON.stringify(connector._cards.at(-1));
-    expect(json).not.toContain('"cmd":"compact"');
   });
 
   it('dsh 一轮结束但 goal 仍 active：卡片收尾为「本轮结束（目标继续）」，不给 compact', async () => {
@@ -1376,39 +1328,6 @@ describe('Bridge.forwardToClaude', () => {
     const compactCard = JSON.stringify(connector._cards.at(-1));
     expect(compactCard).not.toContain('Context -');
     expect(compactCard).not.toContain('Input token');
-  });
-
-  it('unsent fallback run card hides compact button when runner lacks runCompact', async () => {
-    // 回归：finalizeRun 的 unsent fallback 卡（streamCard 抛错走静态卡）若不传
-    // compactSupported 会渲染出 DSH 等无 runCompact 能力 agent 的死按钮
-    // （缺省 undefined = 显示 Compact）。fallback 卡必须与 createRunSession 的
-    // renderOptions 同门控。
-    const runner = createStubRunner({
-      mode: 'streaming',
-      events: [
-        { type: 'system', subtype: 'init', session_id: 's-nc-fb', cwd: tmpDir, model: 'opus' },
-        { type: 'result', subtype: 'success', session_id: 's-nc-fb' },
-      ],
-    });
-    // 无 runCompact 能力（对照组：不挂 runCompact 方法）
-    const connector = createStubConnector();
-    connector.streamCard = async () => {
-      throw new Error('stream unavailable');
-    };
-    const { bridge, sessionStore } = makeBridge({ runner, connector });
-    sessionStore.setCwd(ctx.userId, tmpDir);
-
-    await bridge.forwardToClaude('hi', ctx);
-
-    // Fallback 静态卡在 _sent（sendResult 走 sendWithRetry），非 _cards（stream 失败）
-    const fallbackPayload = connector._sent.find((s) =>
-      JSON.stringify(s.input).includes('"schema":"2.0"'),
-    );
-    expect(fallbackPayload).toBeDefined();
-    const json = JSON.stringify(fallbackPayload!.input);
-    // 无 runCompact → fallback 卡不得渲染 Compact 按钮
-    expect(json).not.toContain('"cmd":"compact"');
-    expect(json).toContain('"cmd":"new-session"');
   });
 
   it('isBusyFor returns true only for the specified workspace', async () => {
@@ -5041,7 +4960,7 @@ describe('Bridge 中断与队列收口回归', () => {
     const all = connector._cards.map((c) => JSON.stringify(c)).join('\n');
     expect(all).not.toContain('"cmd":"compact"');
     // 反向确认：能力本身是有的（按钮缺失只可能来自会话判据）。
-    expect(bridge.hasRunCompact(tmpDir, 'codex')).toBe(true);
+    expect(bridge.hasRunCompact('codex')).toBe(true);
     expect(runCompactSpy).not.toHaveBeenCalled();
   });
 

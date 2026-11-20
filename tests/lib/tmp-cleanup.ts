@@ -96,7 +96,6 @@ export const OUR_TEMP_PREFIXES = [
   'lark-spawning-runner-anchor-',
   'lark-cmd-status-cwd-',
   'lark-restart-cmd-',
-  'lark-base-await-spawn-',
   'lark-spawn-cause-',
   'lark-stderr-level-',
   'lark-logger-write-',

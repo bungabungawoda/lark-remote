@@ -46,19 +46,18 @@ describe('AgentRegistry', () => {
     expect(a).not.toBe(b);
   });
 
-  it('setConfigContainer + getConfigContainer returns the same container', () => {
+  it('updateConfig replaces the snapshot returned by getLatestConfig', () => {
     const registry = new AgentRegistry();
-    const container = { current: { foo: 'bar' } };
-    registry.setConfigContainer(container);
-    expect(registry.getConfigContainer()).toBe(container);
+    registry.updateConfig({ foo: 'bar' });
+    expect(registry.getLatestConfig({ fallback: true })).toEqual({ foo: 'bar' });
   });
 
-  it('getConfigContainer returns undefined before set', () => {
+  it('getLatestConfig returns the fallback before the first update', () => {
     const registry = new AgentRegistry();
-    expect(registry.getConfigContainer()).toBeUndefined();
+    expect(registry.getLatestConfig({ fallback: true })).toEqual({ fallback: true });
   });
 
-  describe('factory reads latest config from configContainer', () => {
+  describe('factory reads latest config from the registry', () => {
     /** Build a minimal AppConfig for testing (feishu fields required by schema). */
     function makeConfig(
       overrides: { model?: string; effort?: string; stopGraceMs?: number } = {},
@@ -76,18 +75,15 @@ describe('AgentRegistry', () => {
       } as AppConfig;
     }
 
-    it('claude factory picks up updated model and effort from configContainer', () => {
+    it('claude factory picks up updated model and effort', () => {
       const registry = new AgentRegistry();
       const startupConfig = makeConfig({ model: 'claude-opus-4-8', effort: 'medium' });
       const updatedConfig = makeConfig({ model: 'claude-sonnet-4-6', effort: 'max' });
 
-      const configContainer = { current: startupConfig };
-      registry.setConfigContainer(configContainer);
+      registry.updateConfig(startupConfig);
 
-      // Same pattern as src/index.ts afterfix
       registry.register('claude', (ws) => {
-        const container = registry.getConfigContainer();
-        const latestConfig = (container?.current as AppConfig) ?? startupConfig;
+        const latestConfig = registry.getLatestConfig(startupConfig);
         const claudeConfig = latestConfig.claude;
         return new ClaudeRunner({
           sessionReader: new ClaudeSessionReader(),
@@ -104,8 +100,7 @@ describe('AgentRegistry', () => {
       expect(before.getStatusInfo().model).toBe('opus');
       expect(before.getStatusInfo().reasoning).toBe('medium');
 
-      // Simulate bridge.setConfig() — updates configContainer.current
-      configContainer.current = updatedConfig;
+      registry.updateConfig(updatedConfig);
 
       // After update: model = sonnet, effort = max
       const after = registry.get('claude', '/tmp/ws-b') as ClaudeRunner;
@@ -113,14 +108,12 @@ describe('AgentRegistry', () => {
       expect(after.getStatusInfo().reasoning).toBe('max');
     });
 
-    it('claude factory fallback to startup config when configContainer not set', () => {
+    it('claude factory falls back to the startup config before any update', () => {
       const registry = new AgentRegistry();
       const startupConfig = makeConfig({ model: 'claude-opus-4-8' });
 
-      // No configContainer set — factory must fall back gracefully
       registry.register('claude', (ws) => {
-        const container = registry.getConfigContainer();
-        const latestConfig = (container?.current as AppConfig) ?? startupConfig;
+        const latestConfig = registry.getLatestConfig(startupConfig);
         const claudeConfig = latestConfig.claude;
         return new ClaudeRunner({
           sessionReader: new ClaudeSessionReader(),

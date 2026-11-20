@@ -1,31 +1,40 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
 import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
+import type { AppConfig } from '../../../src/config/index.js';
+import type { AgentEvent, Runner, SpawnOptions } from '../../../src/runner/index.js';
 import {
   createStubAgentRegistry,
   createStubConnector,
   createStubSessionReaderRegistry,
 } from '../../lib/bridge-stubs.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
-import type { SpawnOptions } from '../../../src/runner/index.js';
+
+const ctx = { userId: 'user-1', chatId: 'chat-1', messageId: 'msg-1' };
 
 let tmpDir: string;
-let config: AppConfig;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-model-test-'));
-  config = AppConfigSchema.parse({
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-run-options-'));
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+function configFor(defaultAgent: AppConfig['defaultAgent']): AppConfig {
+  return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', effort: 'high', stopGraceMs: 5000 },
-    defaultAgent: 'claude',
+    defaultAgent,
     agents: {
       claude: { model: 'opus', effort: 'high' },
-      codex: { model: 'glm-5.2', modelProvider: 'lt' },
+      codex: { model: 'glm-5.2', modelProvider: 'lt', reasoningEffort: 'xhigh' },
       pi: { model: 'glm-5.1', provider: 'lt', thinking: 'high' },
+      qoder: { model: 'qfmodel', reasoningEffort: 'xhigh' },
       opencode: {
         modelID: 'claude-sonnet-4-20250505',
         providerID: 'anthropic',
@@ -35,225 +44,63 @@ beforeEach(() => {
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });
-});
+}
 
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
+async function captureRunOptions(
+  agent: AppConfig['defaultAgent'],
+): Promise<SpawnOptions | undefined> {
+  let captured: SpawnOptions | undefined;
+  const runner: Runner = {
+    isRunning: false,
+    stop: async () => {},
+    killOrphan: () => {},
+    registerExitHandlers: () => {},
+    run: async function* (_message, opts) {
+      captured = opts;
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'session-1',
+        cwd: tmpDir,
+        model: 'test-model',
+      } as AgentEvent;
+      yield { type: 'result', subtype: 'success', session_id: 'session-1' } as AgentEvent;
+    },
+  };
+  const sessionStore = new SessionStore();
+  sessionStore.setCwd(ctx.userId, tmpDir);
+  const bridge = new Bridge({
+    runner,
+    config: configFor(agent),
+    connector: createStubConnector(),
+    sessionStore,
+    agentRegistry: createStubAgentRegistry(runner),
+    sessionReaderRegistry: createStubSessionReaderRegistry(),
+  });
+  await bridge.forwardToClaude('hello', ctx);
+  return captured;
+}
 
-describe('Bridge passes model/effort to runner', () => {
-  /**
-   * Test that Bridge correctly extracts agent run options from config.
-   * This test verifies the getAgentRunOptions logic by checking that
-   * when runner.run() is called, the options include model/effort from config.
-   */
-  it('should pass model and effort from config to runner.run() for claude', async () => {
-    // 创建一个捕获 run() 调用参数的 mock runner
-    let capturedOpts: SpawnOptions | null = null;
-    const mockRunner = {
-      isRunning: false,
-      stop: async () => {},
-      killOrphan: () => {},
-      registerExitHandlers: () => {},
-      run: async function* (_message: string, opts: SpawnOptions) {
-        capturedOpts = opts;
-        // 立即返回结果，不等待
-        return;
-
-        yield { type: 'result', subtype: 'success' };
-      },
-      get capturedOpts() {
-        return capturedOpts;
-      },
-    };
-
-    const sessionStore = new SessionStore();
-
-    // 创建 bridge
-    const bridge = new Bridge({
-      runner: {
-        isRunning: false,
-        run: async function* () {},
-        stop: async () => {},
-        killOrphan: () => {},
-        registerExitHandlers: () => {},
-      },
-      config,
-      connector: createStubConnector(),
-      sessionStore,
-      agentRegistry: createStubAgentRegistry(mockRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
-
-    // 设置 cwd
-    const cwd = '/test/cwd';
-    sessionStore.setCwd('user-1', cwd);
-
-    // 直接调用 getAgentRunOptions 验证它返回正确的值
-    // 由于这是 private 方法，我们通过 forwardToClaude 的调用链来验证
-    // 但更直接的方式是测试配置被正确解析
-
-    // 让我们直接验证 getAgentRunOptions 返回的结果
-    // 通过读取 bridge 实例的 config 来验证
-    const agentOpts = bridge.getAgentRunOptions();
-
-    expect(agentOpts.model).toBe('opus');
-    expect(agentOpts.effort).toBe('high');
+describe('Bridge run options', () => {
+  it('passes claude model and effort to runner.run()', async () => {
+    const opts = await captureRunOptions('claude');
+    expect(opts?.model).toBe('opus');
+    expect(opts?.effort).toBe('high');
   });
 
-  it('should pass model from config to runner.run() for codex', async () => {
-    const codexConfig = AppConfigSchema.parse({
-      ...config,
-      defaultAgent: 'codex',
-    });
-
-    const sessionStore = new SessionStore();
-
-    const mockRunner = {
-      isRunning: false,
-      stop: async () => {},
-      killOrphan: () => {},
-      registerExitHandlers: () => {},
-      run: async function* () {},
-    };
-
-    const bridge = new Bridge({
-      runner: {
-        isRunning: false,
-        run: async function* () {},
-        stop: async () => {},
-        killOrphan: () => {},
-        registerExitHandlers: () => {},
-      },
-      config: codexConfig,
-      connector: createStubConnector(),
-      sessionStore,
-      agentRegistry: createStubAgentRegistry(mockRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
-
-    const agentOpts = bridge.getAgentRunOptions();
-
-    expect(agentOpts.model).toBe('glm-5.2');
+  it('passes codex model and reasoningEffort to runner.run()', async () => {
+    const opts = await captureRunOptions('codex');
+    expect(opts?.model).toBe('glm-5.2');
+    expect(opts?.reasoningEffort).toBe('xhigh');
   });
 
-  it('should pass model and thinking from config to runner.run() for pi', async () => {
-    const piConfig = AppConfigSchema.parse({
-      ...config,
-      defaultAgent: 'pi',
-    });
-
-    const sessionStore = new SessionStore();
-
-    const mockRunner = {
-      isRunning: false,
-      stop: async () => {},
-      killOrphan: () => {},
-      registerExitHandlers: () => {},
-      run: async function* () {},
-    };
-
-    const bridge = new Bridge({
-      runner: {
-        isRunning: false,
-        run: async function* () {},
-        stop: async () => {},
-        killOrphan: () => {},
-        registerExitHandlers: () => {},
-      },
-      config: piConfig,
-      connector: createStubConnector(),
-      sessionStore,
-      agentRegistry: createStubAgentRegistry(mockRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
-
-    const agentOpts = bridge.getAgentRunOptions();
-
-    expect(agentOpts.model).toBe('glm-5.1');
-    expect(agentOpts.thinking).toBe('high');
-  });
-
-  it('should pass modelID from config to runner.run() for opencode', async () => {
-    const opencodeConfig = AppConfigSchema.parse({
-      ...config,
-      defaultAgent: 'opencode',
-    });
-
-    const sessionStore = new SessionStore();
-
-    const mockRunner = {
-      isRunning: false,
-      stop: async () => {},
-      killOrphan: () => {},
-      registerExitHandlers: () => {},
-      run: async function* () {},
-    };
-
-    const bridge = new Bridge({
-      runner: {
-        isRunning: false,
-        run: async function* () {},
-        stop: async () => {},
-        killOrphan: () => {},
-        registerExitHandlers: () => {},
-      },
-      config: opencodeConfig,
-      connector: createStubConnector(),
-      sessionStore,
-      agentRegistry: createStubAgentRegistry(mockRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
-
-    const agentOpts = bridge.getAgentRunOptions();
-
-    // opencode model is set as provider/model in the constructor (not bare modelID).
-    // getAgentRunOptions() intentionally returns undefined for opencode model
-    // to avoid overriding the provider-prefixed model.
-    expect(agentOpts.model).toBeUndefined();
-  });
-
-  it('should pass model and reasoningEffort from config to runner.run() for qoder', async () => {
-    // 回归锚点：bridge 缺 qoder case 时，配置卡的模型/档位只进 /status 展示、
-    // 永远到不了 spawn（2026-11-05 实测缺口）。字段与 codex 对称走
-    // reasoningEffort（session buildArgv 落到 --reasoning-effort）。
-    const qoderConfig = AppConfigSchema.parse({
-      ...config,
-      defaultAgent: 'qoder',
-      agents: {
-        ...config.agents,
-        qoder: { model: 'qfmodel', reasoningEffort: 'xhigh' },
-      },
-    });
-
-    const sessionStore = new SessionStore();
-
-    const mockRunner = {
-      isRunning: false,
-      stop: async () => {},
-      killOrphan: () => {},
-      registerExitHandlers: () => {},
-      run: async function* () {},
-    };
-
-    const bridge = new Bridge({
-      runner: {
-        isRunning: false,
-        run: async function* () {},
-        stop: async () => {},
-        killOrphan: () => {},
-        registerExitHandlers: () => {},
-      },
-      config: qoderConfig,
-      connector: createStubConnector(),
-      sessionStore,
-      agentRegistry: createStubAgentRegistry(mockRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
-
-    const agentOpts = bridge.getAgentRunOptions();
-
-    expect(agentOpts.model).toBe('qfmodel');
-    expect(agentOpts.reasoningEffort).toBe('xhigh');
-  });
+  it.each(['pi', 'qoder', 'opencode'] as const)(
+    'does not re-map %s constructor options onto every turn',
+    async (agent) => {
+      const opts = await captureRunOptions(agent);
+      expect(opts?.model).toBeUndefined();
+      expect(opts?.reasoningEffort).toBeUndefined();
+      expect(opts?.effort).toBeUndefined();
+    },
+  );
 });
