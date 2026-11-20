@@ -58,6 +58,12 @@ function sleepUnref(ms: number): Promise<void> {
 }
 
 /**
+ * /exit、/restart 等待入站装配与已提交队列工作的上限。长 run 不该把退出
+ * 无限期拖住：预算内没做完的工作随进程终止，回复与卡片冲刷仍按各自预算先行。
+ */
+const EXIT_DRAIN_BUDGET_MS = 1_000;
+
+/**
  * 飞书会把极短间隔连发的多条消息合并成一条换行分隔的消息：用户侧看是两条消息，
  * 本端收到的却是 `/a\n/b`。命令执行是「一条消息一条」，首行之外的内容不会作为
  * 独立命令执行。命中时返回首行之外的原始内容（即被忽略的部分），未命中返回 null。
@@ -703,12 +709,7 @@ export class CommandRouter {
         }
       }
       if (this.pendingExit) {
-        // 干净退出前冲刷装配器窗口内未提交的入站 turn，避免静默期窗口内的内容丢失。
-        await this.flushInbound?.();
-        // 后台渲染队列里的兄弟卡 PATCH 同样是未完成的工作：直接退出会让其它
-        // 配置卡停在旧草稿上。给一个短预算，网络慢就不等（进程要能退出去）。
-        await Promise.race([this.flushConfigRender(), sleepUnref(CONFIG_EXIT_FLUSH_BUDGET_MS)]);
-        await this.bridge.waitForQueuedWork();
+        await this.flushBeforeExit();
         this.exitHandler();
       }
       return result;
@@ -786,10 +787,26 @@ export class CommandRouter {
       await this.bridge.sendResult(result, ctx);
     }
     if (this.pendingExit) {
-      await this.flushInbound?.();
-      await this.bridge.waitForQueuedWork();
+      await this.flushBeforeExit();
       this.exitHandler();
     }
+  }
+
+  /**
+   * 退出前的有界冲刷：装配器窗口、后台卡片 PATCH、已提交队列工作各给固定
+   * 预算，长任务不能把 /exit、/restart 拖到 run 结束。
+   */
+  private async flushBeforeExit(): Promise<void> {
+    // 静默期窗口内未提交的入站 turn 先落地，避免内容丢失。
+    const inboundFlush = this.flushInbound?.();
+    if (inboundFlush) {
+      await Promise.race([inboundFlush, sleepUnref(EXIT_DRAIN_BUDGET_MS)]);
+    }
+    // 配置卡兄弟 PATCH 与队列收尾互不依赖：并行跑，各自超预算就放弃。
+    await Promise.all([
+      Promise.race([this.flushConfigRender(), sleepUnref(CONFIG_EXIT_FLUSH_BUDGET_MS)]),
+      Promise.race([this.bridge.waitForQueuedWork(), sleepUnref(EXIT_DRAIN_BUDGET_MS)]),
+    ]);
   }
 
   /**

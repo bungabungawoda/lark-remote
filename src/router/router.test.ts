@@ -1529,6 +1529,26 @@ describe('CommandRouter', () => {
     expect(sessionStore.getSessionId('user1')).toBeUndefined();
   });
 
+  it('/resume use old card without cwd falls back to the current cwd', async () => {
+    // 完成通知卡曾漏带 cwd；旧卡也不能因此整类失效。当前 cwd 下的 session
+    // 仍应恢复成功，cmdResume 负责校验归属，不会误绑别的目录的 session。
+    const projectsDir = path.join(tmpDir, 'claude-projects');
+    const projDir = path.join(projectsDir, encodedProjectDir(tmpDir));
+    fs.mkdirSync(projDir, { recursive: true });
+    writeSessionJsonl(
+      projDir,
+      'legacy-session',
+      tmpDir,
+      `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-06-19T10:00:00.000Z"}`,
+    );
+    const { router, sessionStore } = createRouter({ projectsDir });
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    await router.handleCardAction({ cmd: 'resume.use', sessionId: 'legacy-session' }, ctx);
+
+    expect(sessionStore.getSessionId('user1')).toBe('legacy-session');
+  });
+
   it('/resume use card action rejects a stale card cwd', async () => {
     const projectsDir = path.join(tmpDir, 'claude-projects');
     const projDir = path.join(projectsDir, encodedProjectDir(tmpDir));
@@ -3921,6 +3941,23 @@ describe('CommandRouter', () => {
     await exitPromise;
     expect(workDone).toBe(true);
     expect(exitBeforeWorkFinished).toBe(false);
+  });
+
+  it('/exit exits within the queue budget when a run never settles', async () => {
+    let exited = false;
+    const { router, bridge } = createRouter({
+      exitHandler: () => {
+        exited = true;
+      },
+    });
+    // 模拟长 run：队列任务永不结束。退出路径必须有界，不能等它。
+    bridge.enqueue(tmpDir, () => new Promise<void>(() => {}));
+
+    const startedAt = Date.now();
+    await router.handle('/exit', ctx);
+
+    expect(exited).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
   it('help.exit card action waits for committed queued work before exiting', async () => {

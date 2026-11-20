@@ -39,9 +39,9 @@ import { stopCurrentTurn } from './bridge/stop-current.js';
  * 提速靠「回调链零网络写」拿到，不靠压这个预算。
  */
 const SESSION_MUTATING_FLUSH_BUDGET_MS = 1_000;
-const SESSION_MUTATING_PENDING_TOAST = {
-  toast: { type: 'pending', content: '正在等待附件处理…' },
-} as const;
+const SESSION_MUTATING_PENDING_TOAST: CardActionResponse = {
+  toast: { type: 'loading', content: '正在等待附件处理…' },
+};
 
 interface CardActionDispatchInput {
   actionValue: CardActionPayload;
@@ -295,7 +295,10 @@ function handleInboundMessage(ctx: HandlerContext, msg: FeishuMessage): void {
 }
 
 /** 卡片动作：鉴权 → stop/直返/order.exec → immediate 或普通队列。 */
-async function handleCardAction(ctx: HandlerContext, action: CardActionEvent) {
+async function handleCardAction(
+  ctx: HandlerContext,
+  action: CardActionEvent,
+): Promise<CardActionResponse | void> {
   if (!ctx.binder.isOwner(action.operator.openId)) {
     ctx.binder.recordRejectedCardAction(action.operator.openId);
     return;
@@ -397,30 +400,27 @@ async function dispatchCardAction(
     forwardActionFeedback(res);
     return;
   }
-  await new Promise<void>((resolve) => {
-    ctx.bridge.enqueue(
-      cwd,
-      async () => {
-        try {
-          const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
-          forwardActionFeedback(res);
-        } finally {
-          resolve();
-        }
+  // Work actions must return immediately: the callback has a 3s budget, while
+  // the queued task may wait behind a long run. Feedback is sent as a separate
+  // message once the handler actually runs.
+  void ctx.bridge.enqueue(
+    cwd,
+    async () => {
+      const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
+      forwardActionFeedback(res);
+    },
+    {
+      taskMeta: {
+        userId,
+        chatId,
+        messageId: ctx.router.mintQueueTaskKey('card', actionValue.cmd),
+        feishuReplyTo: messageId,
+        messagePreview: `card action: ${actionValue.cmd}`,
+        kind: COMPACT_ACTION_CMDS.has(actionValue.cmd) ? 'compact' : 'command',
+        editable: !COMPACT_ACTION_CMDS.has(actionValue.cmd),
       },
-      {
-        taskMeta: {
-          userId,
-          chatId,
-          messageId: ctx.router.mintQueueTaskKey('card', actionValue.cmd),
-          feishuReplyTo: messageId,
-          messagePreview: `card action: ${actionValue.cmd}`,
-          kind: COMPACT_ACTION_CMDS.has(actionValue.cmd) ? 'compact' : 'command',
-          editable: !COMPACT_ACTION_CMDS.has(actionValue.cmd),
-        },
-      },
-    );
-  });
+    },
+  );
 }
 
 export function setupMessageHandlers(deps: MessageHandlerDeps): void {

@@ -258,7 +258,7 @@ describe('setupMessageHandlers', () => {
     const response = await h.handlers.card?.(cardAction('config.save'));
 
     expect(response).toEqual({
-      toast: { type: 'pending', content: '正在等待附件处理…' },
+      toast: { type: 'loading', content: '正在等待附件处理…' },
     });
     expect(h.router.handleCardAction).not.toHaveBeenCalled();
 
@@ -268,6 +268,28 @@ describe('setupMessageHandlers', () => {
     releaseDownload();
     await vi.waitFor(() =>
       expect(h.order).toEqual(['enqueue:text', 'handle:old workspace message', 'card:config.save']),
+    );
+  });
+
+  it('non-immediate card action replies immediately instead of waiting for the queue', async () => {
+    // compact / resume.compact queue real work. The click callback has a 3s
+    // budget, so it must return before the task starts — waiting for the queue
+    // makes Feishu time out whenever a long run occupies the lane.
+    const h = makeHarness();
+    let runTask!: () => Promise<void>;
+    h.bridge.enqueue.mockImplementation(
+      (_cwd: string, task: () => Promise<void>) => (runTask = task),
+    );
+
+    const response = await h.handlers.card?.(cardAction('compact'));
+
+    expect(response).toBeUndefined();
+    expect(h.router.handleCardAction).not.toHaveBeenCalled();
+
+    await runTask();
+    expect(h.router.handleCardAction).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'compact' }),
+      expect.anything(),
     );
   });
 

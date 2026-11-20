@@ -2445,7 +2445,7 @@ export class Bridge {
           headerText: `📂 \`${cwd}\`\n会话: **${sessionId}**`,
           title: presentation.title,
           ...(presentation.result ? { usageResult: presentation.result } : {}),
-          actions: [resumeUseButton(sessionId, agentKind)],
+          actions: [resumeUseButton(sessionId, agentKind, cwd)],
           headerTemplate: presentation.template,
         },
       );

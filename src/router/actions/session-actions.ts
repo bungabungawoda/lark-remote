@@ -28,7 +28,6 @@ export async function handleResumeUse(
   // (both active and completed cards include the agent field).
   const resolvedAgent = resolveAgentKind(value.agent, host.config.defaultAgent);
 
-  const cardCwd = value.cwd;
   const entry = host.sessionStore.get(ctx.userId);
   const cwd = entry?.cwd;
   if (!cwd) {
@@ -44,7 +43,9 @@ export async function handleResumeUse(
     await host.bridge.sendResult({ text: '缺少 sessionId，请重新从 /resume 列表选择会话' }, ctx);
     return;
   }
-  if (!cardCwd || cardCwd !== cwd) {
+  // 旧卡片可能没有 cwd；cmdResume 会按当前 cwd 校验 session 归属，校验失败
+  // 不会写入绑定。只有「带了别的 cwd」才说明卡片已过期。
+  if (value.cwd && value.cwd !== cwd) {
     await host.bridge.sendResult(
       { text: '卡片所属工作目录已变更，请重新在当前目录执行 /resume' },
       ctx,

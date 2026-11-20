@@ -1171,8 +1171,10 @@ await 链。
 - **预算口径单源**：inline 响应体与兄弟卡 PATCH 都走 `budgetConfigCard`
   （`enforceCardBudget`）。只给其中一条裁剪，另一条会被飞书 `11310` 整卡拒绝，
   而 `patchCard` 失败会把这个 messageId 从 `configCardIds` 永久剔除。
-- **退出前冲刷**：`/exit`、`/restart` 前 `flushConfigRender` 带
-  `CONFIG_EXIT_FLUSH_BUDGET_MS` 短预算，不丢已算好的兄弟卡 PATCH，也不阻住进程。
+- **退出前冲刷**：`/exit`、`/restart` 前依次冲刷入站装配、`flushConfigRender`
+  与已提交队列工作，各自带固定预算（`EXIT_DRAIN_BUDGET_MS` /
+  `CONFIG_EXIT_FLUSH_BUDGET_MS`）。长 run 不会把退出拖到结束；预算内没做完的
+  工作随进程终止。
 - `src/router/actions/config-render.ts`：串行 + 合并窗口（`CONFIG_RENDER_DEBOUNCE_MS`）
   的后台渲染队列。连点 N 次只扇出 1 次 PATCH；渲染时从**最新**草稿重建，最后一次
   状态赢；被点击的那张（`inlineMessageId`）跳过，避免同消息重复 PATCH 触发 230429。

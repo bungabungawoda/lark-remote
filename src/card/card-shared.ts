@@ -125,10 +125,10 @@ export function resumeCompactButton(sessionId: string, agent: string): object {
   return cardButton('🗜 Compact', { cmd: 'resume.compact', sessionId, agent }, { type: 'primary' });
 }
 
-export function resumeUseButton(sessionId: string, agent: AgentKind): object {
+export function resumeUseButton(sessionId: string, agent: AgentKind, cwd: string): object {
   return cardButton(
     '🔁 切换到此会话',
-    { cmd: 'resume.use', sessionId, agent },
+    { cmd: 'resume.use', sessionId, agent, cwd },
     { type: 'primary' },
   );
 }

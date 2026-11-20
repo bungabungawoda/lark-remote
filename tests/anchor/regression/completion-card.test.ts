@@ -99,6 +99,17 @@ function makeFakeReader(eventsFactory: () => AgentSessionContentEvent[]): {
   return { reader, readContent };
 }
 
+function findCardActionValue(node: unknown, cmd: string): Record<string, unknown> | undefined {
+  if (!node || typeof node !== 'object') return undefined;
+  const record = node as Record<string, unknown>;
+  if (record.cmd === cmd) return record;
+  for (const value of Object.values(record)) {
+    const found = findCardActionValue(value, cmd);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 describe('completion notification card', () => {
   afterEach(() => {
     mockLogger.debug.mockReset();
@@ -176,6 +187,24 @@ describe('completion notification card', () => {
       for (const card of cards) {
         expect(JSON.stringify(card).length).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
       }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('完成通知卡的「切换到此会话」携带 cwd，点击后不会被 resume.use 拒绝', async () => {
+    const { connector, tmpDir } = await runBridgeWithReader([]);
+    try {
+      const cards = connector._sent
+        .map((m) => (m.input as { card?: object } | undefined)?.card)
+        .filter((card): card is object => !!card);
+      const resumeUse = cards
+        .map((card) => findCardActionValue(card, 'resume.use'))
+        .find((value): value is Record<string, unknown> => !!value);
+
+      expect(resumeUse).toBeDefined();
+      expect(typeof resumeUse!.cwd).toBe('string');
+      expect(resumeUse!.cwd).toBe(tmpDir);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
