@@ -1136,9 +1136,10 @@ queueCardMessages 卡片更新的 key）必须与「一次入队动作」1:1。*
 重试一次——一次网络抖动不该让卡片停在旧状态；两次都失败才放弃（映射清理后无自动修正）。
 
 **点击路径必须让回调响应携带卡片**：后台 PATCH 只是非点击路径（如 `queue.immediate`
-清除前方任务）的补偿。`queue.cancel` / `queue.immediate` 是即时卡片动作，回包要等 handler
-返回；只做后台 PATCH 时，飞书会用 pre-click 快照覆盖它，卡片停在「等待当前任务结束」、
-按钮继续可点。两者因此都把重建卡放进 `responseWithCard`（同 §9.19）。
+清除前方任务）的补偿。`queue.cancel` / `queue.immediate` / `stop` / `job.kill` /
+`stop.session` 是卡片动作，回包要等 handler 返回；只做后台 PATCH 时，飞书会用
+pre-click 快照覆盖它，卡片停在「运行中」、按钮继续可点。它们因此都把重建卡放进
+`responseWithCard`（同 §9.19）。
 
 实测症状：三次点击后三张卡都显示「第 1 位」，撤销/执行态落到错误条目。`QueueManager.enqueue`
 现在对撞 key 打 `duplicate queue key` warn 作为 tripwire（不改行为，只留证据）——出现该

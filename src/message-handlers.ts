@@ -382,8 +382,14 @@ async function dispatchCardAction(
   if (isImmediateAction(actionValue.cmd)) {
     const res = await new Promise<CardActionResponse | void>((resolve) => {
       ctx.bridge.enqueueImmediate(cwd, async () => {
-        const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
-        resolve(res);
+        let response: CardActionResponse | void = undefined;
+        try {
+          response = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
+        } finally {
+          // A throwing handler must still settle the click callback; otherwise
+          // Feishu waits for a reply that never comes.
+          resolve(response);
+        }
       });
     });
     const cardResponse = passthroughCardResponse(res);
@@ -395,9 +401,12 @@ async function dispatchCardAction(
     ctx.bridge.enqueue(
       cwd,
       async () => {
-        const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
-        forwardActionFeedback(res);
-        resolve();
+        try {
+          const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
+          forwardActionFeedback(res);
+        } finally {
+          resolve();
+        }
       },
       {
         taskMeta: {

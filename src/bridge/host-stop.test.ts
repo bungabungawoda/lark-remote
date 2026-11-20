@@ -31,7 +31,6 @@ function makeHostStop(opts?: {
   store?: SessionStore;
   readerRegistry?: SessionReaderRegistry;
 }) {
-  const sendResult = vi.fn().mockResolvedValue(true);
   const cancel =
     opts?.cancel ??
     vi.fn().mockResolvedValue({ status: 'cancelled', sessionId: SID, goalPhase: 'paused' });
@@ -43,45 +42,53 @@ function makeHostStop(opts?: {
     sessionReaderRegistry: opts?.readerRegistry ?? makeReaderRegistry(),
     getConfig: () => ({ defaultAgent: opts?.defaultAgent ?? 'dsh' }) as unknown as AppConfig,
     getRunner,
-    sendResult,
   });
-  return { hostStop, sendResult, getRunner, cancel };
-}
-
-function sentText(sendResult: ReturnType<typeof vi.fn>): string {
-  return (sendResult.mock.calls.at(-1)?.[0] as { text?: string } | undefined)?.text ?? '';
+  return { hostStop, getRunner, cancel };
 }
 
 describe('HostTurnStop', () => {
   it('cancels the explicit session and reports the paused goal', async () => {
-    const { hostStop, sendResult, cancel } = makeHostStop();
+    const { hostStop, cancel } = makeHostStop();
 
-    await hostStop.handleCardAction({ sessionId: SID, agent: 'dsh', cwd: CWD }, ctx);
+    const outcome = await hostStop.handleCardAction(
+      { sessionId: SID, agent: 'dsh', cwd: CWD },
+      ctx,
+    );
 
     expect(cancel).toHaveBeenCalledWith(SID);
-    const text = sentText(sendResult);
+    expect(outcome.ok).toBe(true);
+    const text = outcome.ok ? formatHostStopResult(outcome.result) : '';
     expect(text).toContain('已终止 DSH 会话');
     expect(text).toContain('目标已暂停');
   });
 
   it('rejects a non-DSH agent without touching a runner', async () => {
-    const { hostStop, sendResult, getRunner } = makeHostStop();
+    const { hostStop, getRunner } = makeHostStop();
 
-    await hostStop.handleCardAction({ sessionId: SID, agent: 'claude', cwd: CWD }, ctx);
+    const outcome = await hostStop.handleCardAction(
+      { sessionId: SID, agent: 'claude', cwd: CWD },
+      ctx,
+    );
 
     expect(getRunner).not.toHaveBeenCalled();
-    expect(sentText(sendResult)).toContain('不支持终止宿主轮次');
+    expect(outcome).toEqual({
+      ok: false,
+      error: expect.stringContaining('不支持终止宿主轮次'),
+    });
   });
 
   it('reports a missing session instead of cancelling an unrelated one', async () => {
-    const { hostStop, sendResult, getRunner } = makeHostStop({
+    const { hostStop, getRunner } = makeHostStop({
       store: makeStore({ sessionId: '' }),
     });
 
-    await hostStop.handleCardAction({ agent: 'dsh', cwd: CWD }, ctx);
+    const outcome = await hostStop.handleCardAction({ agent: 'dsh', cwd: CWD }, ctx);
 
     expect(getRunner).not.toHaveBeenCalled();
-    expect(sentText(sendResult)).toContain('没有可终止的会话');
+    expect(outcome).toEqual({
+      ok: false,
+      error: expect.stringContaining('没有可终止的会话'),
+    });
   });
 
   it('stopCurrent uses the current cwd/session for DSH', async () => {

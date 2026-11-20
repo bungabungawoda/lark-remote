@@ -7,6 +7,7 @@ import { RESUME_PAGE_SIZE } from '../commands/resume.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
 import * as commandActions from './command-actions.js';
+import { formatHostStopResult } from '../../bridge/host-stop.js';
 import {
   ACTIVE_PAGE_SIZE,
   applyNewSession,
@@ -138,7 +139,7 @@ export async function handleCardStop(
   host: CommandRouter,
   value: CardActionPayload,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   if (!ctx.userId || !ctx.chatId || (!value.runId && !ctx.messageId)) {
     await host.bridge.sendResult({ text: '⚠️ 无效的停止请求，缺少必要信息' }, ctx);
     return;
@@ -154,7 +155,13 @@ export async function handleCardStop(
   // run had already exited. Give the user a visible result.
   if (!stopped) {
     await host.bridge.sendResult({ text: '该任务已结束，无需终止' }, ctx);
-    return;
+    // `stop` is an immediate action: the entry layer awaits this handler and
+    // returns its response. A PATCH alone would be overwritten by Feishu's
+    // pre-click snapshot, leaving the stop button clickable again.
+    const card = host.bridge.getTerminalRunCard(value.runId, ctx.messageId);
+    if (!card) return;
+    await host.bridge.updateCardInPlace(card, ctx);
+    return responseWithCard(card);
   }
   // DSH: `session/cancel` is only a request. If the host still reports the
   // turn open, say so instead of letting the card imply a clean stop.
@@ -169,6 +176,10 @@ export async function handleCardStop(
       ctx,
     );
   }
+  // `session.finish()` already patched the terminal card, but the empty
+  // callback response lets Feishu restore the pre-click "running" snapshot.
+  // Return the same card so the stop button cannot come back.
+  if (interrupt.card) return responseWithCard(interrupt.card);
 }
 
 /**
@@ -181,7 +192,7 @@ export async function handleJobKill(
   host: CommandRouter,
   value: CardActionPayload,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const runId = typeof value.runId === 'string' ? value.runId : '';
   const jobId = typeof value.jobId === 'string' ? value.jobId : '';
   // miss path 必回复（本文件的设计约束）：旧版/异常卡片 payload 缺参时
@@ -190,6 +201,46 @@ export async function handleJobKill(
     await host.bridge.sendResult({ text: CARD_PAYLOAD_MISSING }, ctx);
     return;
   }
-  if (await host.bridge.killBackgroundJob(runId, jobId, ctx)) return;
+  const card = await host.bridge.killBackgroundJob(runId, jobId, ctx);
+  if (card) return responseWithCard(card);
   await host.bridge.sendResult({ text: '停止失败：任务可能已自行结束，或记录已回收' }, ctx);
+}
+
+/**
+ * Resume-card 「终止」: cancel the host turn and replace the clicked card with
+ * its post-cancel rendering. The callback is awaited by the entry layer, so the
+ * rebuilt card must ride the response; a bare PATCH would be undone by Feishu's
+ * pre-click snapshot.
+ */
+export async function handleStopSession(
+  host: CommandRouter,
+  value: CardActionPayload,
+  ctx: CommandContext,
+): Promise<CardActionResponse | void> {
+  const outcome = await host.bridge.handleStopSession(value, ctx);
+  if (!outcome.ok) {
+    await host.bridge.sendResult({ text: outcome.error }, ctx);
+    return;
+  }
+
+  const { result } = outcome;
+  const text = formatHostStopResult(result);
+  // Rebuild against the clicked card's own cwd: an old resume card may belong
+  // to another workspace than the user's current one.
+  const cwd = value.cwd ?? host.sessionStore.getCwd(ctx.userId);
+  if (cwd) {
+    const rebuilt = commandActions.buildResumeSessionCard(
+      host,
+      result.agentKind,
+      result.sessionId,
+      ctx,
+      cwd,
+    );
+    if (rebuilt.card) {
+      await host.bridge.sendResult({ text }, ctx);
+      await host.bridge.updateCardInPlace(rebuilt.card, ctx);
+      return responseWithCard(rebuilt.card);
+    }
+  }
+  await host.bridge.sendResult({ text }, ctx);
 }

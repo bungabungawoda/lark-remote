@@ -162,6 +162,11 @@ export abstract class CardSession<S, RO = unknown> {
     return this.messageId;
   }
 
+  /** Current card JSON, for callers that must answer a click with the new state. */
+  get currentCard(): object {
+    return this.renderCurrentCard();
+  }
+
   /**
    * 合批窗口（ms）。连续事件各触发一次全卡 render + patch 是流式 CPU 主要
    * 来源；窗口内多个事件复用同一次延迟 flush。窗口大小可通过 constructor 覆盖

@@ -37,7 +37,7 @@ interface SessionDisplay {
   activeRunRunId?: string;
 }
 
-interface ResumeCommandDeps {
+export interface ResumeCommandDeps {
   defaultAgent: AgentKind;
   getSessionEntry(userId: string): ResumeSessionEntry | undefined;
   setSessionId(userId: string, agent: AgentKind, sessionId: string, cwd: string): void;
@@ -159,14 +159,19 @@ function verifyResumeTarget(
   return undefined;
 }
 
-function resumeSessionCard(
-  ctx: CommandContext,
+/**
+ * Render the session-detail card without binding the session.
+ *
+ * `stop.session` needs to refresh the card it was clicked on after cancelling
+ * the host turn; binding the session there would silently switch the user's
+ * current session as a side effect of pressing stop.
+ */
+export function buildResumeSessionCard(
   deps: ResumeCommandDeps,
   agentKind: AgentKind,
   sessionIdArg: string,
   cwd: string,
 ): CommandResult {
-  deps.setSessionId(ctx.userId, agentKind, sessionIdArg, cwd);
   const display = deps.readDisplay(sessionIdArg, cwd, {
     agentKind,
     maxEvents: AUTO_RESUME_MAX_EVENTS,
@@ -209,6 +214,17 @@ function resumeSessionCard(
       },
     ),
   };
+}
+
+function resumeSessionCard(
+  ctx: CommandContext,
+  deps: ResumeCommandDeps,
+  agentKind: AgentKind,
+  sessionIdArg: string,
+  cwd: string,
+): CommandResult {
+  deps.setSessionId(ctx.userId, agentKind, sessionIdArg, cwd);
+  return buildResumeSessionCard(deps, agentKind, sessionIdArg, cwd);
 }
 
 function resumeById(

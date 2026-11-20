@@ -2107,7 +2107,10 @@ describe('CommandRouter', () => {
     it('test_anchor_stop_session_card_action_dispatches_to_bridge', async () => {
       // 验证什么：恢复卡的「终止」回调必须分发到 bridge.handleStopSession；
       // 缺失会让宿主侧仍 running 的会话卡按钮点了无反应。
-      const handleStopSession = vi.fn().mockResolvedValue(undefined);
+      const handleStopSession = vi.fn().mockResolvedValue({
+        ok: true,
+        result: { status: 'cancelled', sessionId: 'dsh-session-1', agentKind: 'dsh' },
+      });
       const { router } = createRouter({ bridge: createMockBridge({ handleStopSession }) });
       const value = {
         cmd: 'stop.session',
@@ -2117,6 +2120,33 @@ describe('CommandRouter', () => {
       };
       await router.handleCardAction(value, ctx);
       expect(handleStopSession).toHaveBeenCalledWith(value, ctx);
+    });
+
+    it('stop.session 回调携带重渲染的恢复卡，终止按钮不再留存', async () => {
+      const handleStopSession = vi.fn().mockResolvedValue({
+        ok: true,
+        result: { status: 'cancelled', sessionId: 'dsh-session-1', agentKind: 'dsh' },
+      });
+      const { router, sessionStore } = createRouter({
+        bridge: createMockBridge({ handleStopSession }),
+      });
+      sessionStore.setCwd('user1', tmpDir);
+      const value = {
+        cmd: 'stop.session',
+        sessionId: 'dsh-session-1',
+        agent: 'dsh',
+        cwd: tmpDir,
+      };
+
+      const response = await router.handleCardAction(value, ctx);
+
+      expect(response).toEqual(
+        expect.objectContaining({
+          card: expect.objectContaining({ type: 'raw' }),
+        }),
+      );
+      const cardJson = JSON.stringify((response as { card: { data: unknown } }).card.data);
+      expect(cardJson).not.toContain('"cmd":"stop.session"');
     });
 
     it('test_anchor_auto_resume_card_kimi_acp_has_compact_button', async () => {
@@ -3189,6 +3219,28 @@ describe('CommandRouter', () => {
         runId: 'stale-run-1',
         cardMessageId: 'live-card-message',
       });
+    });
+
+    it('stop card action returns the terminal card in the callback response', async () => {
+      // `stop` is immediate: the entry layer awaits the handler. Without the
+      // card in the response, Feishu restores the pre-click snapshot and the
+      // stop button remains clickable after a successful stop.
+      const interruptCurrentRunDetailed = vi.fn().mockResolvedValue({
+        stopped: true,
+        stoppedCount: 1,
+        card: { schema: '2.0', body: { elements: [] } },
+      });
+      const { router } = createRouter({
+        bridge: createMockBridge({ interruptCurrentRunDetailed }),
+      });
+
+      const response = await router.handleCardAction({ cmd: 'stop', runId: 'live-run-1' }, ctx);
+
+      expect(response).toEqual(
+        expect.objectContaining({
+          card: { type: 'raw', data: { schema: '2.0', body: { elements: [] } } },
+        }),
+      );
     });
 
     it('stop card action accepts a card messageId when behavior runId is absent', async () => {

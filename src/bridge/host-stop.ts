@@ -3,7 +3,7 @@ import { isAgentKind } from '../agent-kinds.js';
 import type { AppConfig } from '../config/index.js';
 import type { HostStopOutcome, Runner } from '../runner/types.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
-import type { CommandContext, CommandResult } from './index.js';
+import type { CommandContext } from './index.js';
 import { getLogger } from '../logger/index.js';
 import { hasSessionContent } from '../session/session-content.js';
 
@@ -21,7 +21,6 @@ interface HostTurnStopDeps {
   /** live 取值：/config 会整体替换 config 引用。 */
   getConfig(): AppConfig;
   getRunner(cwd: string, kind?: AgentKind, opts?: { replaceStale?: boolean }): Runner;
-  sendResult(result: CommandResult, ctx: CommandContext): Promise<boolean>;
 }
 
 interface HostTurnStopTarget {
@@ -38,6 +37,10 @@ export interface HostTurnStopResult {
   goalPhase?: HostStopOutcome['goalPhase'];
   goalActivation?: HostStopOutcome['goalActivation'];
 }
+
+/** Result of a resume-card stop click, before the router builds the card reply. */
+export type HostStopCardOutcome =
+  { ok: true; result: HostTurnStopResult } | { ok: false; error: string };
 
 type CancelCapableRunner = Runner & {
   cancelHostTurn(sessionId: string): Promise<HostStopOutcome>;
@@ -97,14 +100,13 @@ export class HostTurnStop {
   async handleCardAction(
     value: { sessionId?: string; agent?: string; cwd?: string },
     ctx: CommandContext,
-  ): Promise<void> {
+  ): Promise<HostStopCardOutcome> {
     const target = this.resolveExplicit(value, ctx.userId);
     if ('error' in target) {
-      await this.deps.sendResult({ text: target.error }, ctx);
-      return;
+      return { ok: false, error: target.error };
     }
     const result = await this.stop(target);
-    await this.deps.sendResult({ text: formatHostStopResult(result) }, ctx);
+    return { ok: true, result };
   }
 
   /**

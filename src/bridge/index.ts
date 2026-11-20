@@ -8,7 +8,11 @@ import { CodebuddyRuntime } from './codebuddy-runtime.js';
 import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
-import { renderRunCardDetailed, type RunCardRenderOptions } from '../card/run-renderer.js';
+import {
+  renderRunCard,
+  renderRunCardDetailed,
+  type RunCardRenderOptions,
+} from '../card/run-renderer.js';
 import { writeFinalAnswerFile, finalAnswerFileFailureCard } from '../card/final-answer-file.js';
 import { bestEffortUnlink } from '../common/fs.js';
 import { isRunActive, isRunTerminal, type RunState, type RunTerminal } from '../card/run-state.js';
@@ -19,7 +23,7 @@ import { RunUsageCollector } from './run-usage.js';
 import type { AgentKind } from '../agent-kinds.js';
 import type { StopOutcome } from '../runner/types.js';
 import { CompactLifecycle, runnerSupportsCompact, terminalReactionEmoji } from './compact.js';
-import { HostTurnStop, type HostTurnStopResult } from './host-stop.js';
+import { HostTurnStop, type HostStopCardOutcome, type HostTurnStopResult } from './host-stop.js';
 import { JobWatchLifecycle } from './job-watch.js';
 import { BashRunLifecycle } from './bash-run.js';
 import {
@@ -235,6 +239,8 @@ export interface InterruptOutcome {
   agentKind?: AgentKind;
   /** Present for DSH: what the remote stop actually achieved. */
   stop?: StopOutcome;
+  /** 被停 run 卡的终态渲染；卡片回调必须把它带回飞书，否则恢复 pre-click 快照。 */
+  card?: object;
 }
 
 export interface ActiveRunSnapshot {
@@ -479,7 +485,6 @@ export class Bridge {
       sessionReaderRegistry: this.sessionReaderRegistry,
       getConfig: () => this.config,
       getRunner: (cwd, kind, opts) => this.getRunner(cwd, kind, opts),
-      sendResult: (result, ctx) => this.sendResult(result, ctx),
     });
   }
 
@@ -997,10 +1002,13 @@ export class Bridge {
     let stoppedCount = 0;
     let agentKind: AgentKind | undefined;
     let stop: StopOutcome | undefined;
+    let card: object | undefined;
     for (const [cwd, active] of activeTargets) {
-      const stopResult = await this.interruptActiveRun(cwd, active);
+      const interrupted = await this.interruptActiveRun(cwd, active);
       stoppedCount++;
       agentKind ??= active.agentKind;
+      card ??= interrupted.card;
+      const stopResult = interrupted.stop;
       // 聚合口径：只要有一次 remote stop 没能确认，就按「可能仍在跑」上报，
       // 不让后面的已确认结果盖掉它（调用方据此决定是否承诺"已停止"）。
       if (
@@ -1030,6 +1038,7 @@ export class Bridge {
       stoppedCount,
       ...(agentKind ? { agentKind } : {}),
       ...(stop ? { stop } : {}),
+      ...(card ? { card } : {}),
     };
   }
 
@@ -1071,7 +1080,7 @@ export class Bridge {
   private async interruptActiveRun(
     cwd: string,
     active: ActiveRun,
-  ): Promise<StopOutcome | undefined> {
+  ): Promise<{ stop?: StopOutcome; card: object }> {
     getLogger().info(
       `[lark-remote] interrupt hit runId=${active.runId} cwd=${cwd} userId=${active.userId}`,
     );
@@ -1154,7 +1163,7 @@ export class Bridge {
     if (stop?.status !== 'unconfirmed') {
       getLogger().info(`[lark-remote] interrupt stop done runId=${active.runId}`);
     }
-    return stop;
+    return { ...(stop ? { stop } : {}), card: active.session.currentCard };
   }
 
   /**
@@ -1353,8 +1362,29 @@ export class Bridge {
   // this.jobWatch 的同名方法。
 
   /** 停止终态卡上的一个后台任务（job.kill 卡片动作）。 */
-  async killBackgroundJob(runId: string, jobId: string, ctx: CommandContext): Promise<boolean> {
+  async killBackgroundJob(
+    runId: string,
+    jobId: string,
+    ctx: CommandContext,
+  ): Promise<object | undefined> {
     return this.jobWatch.killBackgroundJob(runId, jobId, ctx);
+  }
+
+  /**
+   * Re-render the cached terminal card for a run without touching the network.
+   *
+   * Stop-button miss path: the run already ended, but the clicked card still
+   * shows "running" and a live stop button. The handler returns this card in the
+   * callback response so Feishu does not restore the pre-click snapshot.
+   */
+  getTerminalRunCard(runId?: string, messageId?: string): object | undefined {
+    const snapshot =
+      (runId ? this.runCardSnapshots.get(runId) : undefined) ??
+      (messageId
+        ? [...this.runCardSnapshots.values()].find((item) => item.messageId === messageId)
+        : undefined);
+    if (!snapshot || !isRunTerminal(snapshot.state.terminal)) return undefined;
+    return renderRunCard(snapshot.state, snapshot.options);
   }
 
   /** Send a file to the user via Feishu. */
@@ -2549,8 +2579,8 @@ export class Bridge {
   async handleStopSession(
     value: { sessionId?: string; agent?: string; cwd?: string },
     ctx: CommandContext,
-  ): Promise<void> {
-    await this.hostStop.handleCardAction(value, ctx);
+  ): Promise<HostStopCardOutcome> {
+    return this.hostStop.handleCardAction(value, ctx);
   }
 
   /**

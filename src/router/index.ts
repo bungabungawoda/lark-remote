@@ -422,7 +422,7 @@ const CARD_ACTION_SPECS = new Map<string, CardActionHandler>([
   ['config.save', (host, value, ctx) => configActions.enqueueConfigAction(host, value, ctx)],
   ['compact', (host, value, ctx) => host.bridge.handleCompactAction(value, ctx)],
   ['resume.compact', (host, value, ctx) => host.bridge.handleResumeCompact(value, ctx)],
-  ['stop.session', (host, value, ctx) => host.bridge.handleStopSession(value, ctx)],
+  ['stop.session', (host, value, ctx) => sessionActions.handleStopSession(host, value, ctx)],
 ]);
 
 type CommandHandler = (

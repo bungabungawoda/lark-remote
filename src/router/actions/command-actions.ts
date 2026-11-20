@@ -28,7 +28,12 @@ import type { LsTrailEntry } from '../commands/ls.js';
 import { buildWsCommand } from '../commands/ws.js';
 import { buildOrderCommand } from '../commands/order.js';
 import type { OrderEntry } from '../../order/index.js';
-import { buildResumeCommand, AUTO_RESUME_MAX_EVENTS } from '../commands/resume.js';
+import {
+  AUTO_RESUME_MAX_EVENTS,
+  buildResumeCommand,
+  buildResumeSessionCard as buildResumeSessionCardFrom,
+  type ResumeCommandDeps,
+} from '../commands/resume.js';
 import { resolveDirectory } from '../path-validation.js';
 import { pageInfo } from '../paging.js';
 import type { CommandRouter } from '../index.js';
@@ -465,13 +470,8 @@ export function cmdWs(
   });
 }
 
-export function cmdResume(
-  host: CommandRouter,
-  args: string[],
-  ctx: CommandContext,
-  offset = 0,
-): CommandResult {
-  return buildResumeCommand(args, ctx, offset, {
+function resumeCommandDeps(host: CommandRouter): ResumeCommandDeps {
+  return {
     defaultAgent: host.config.defaultAgent,
     getSessionEntry: (userId) => host.sessionStore.get(userId),
     setSessionId: (userId, agent, sessionId, cwd) =>
@@ -482,7 +482,28 @@ export function cmdResume(
     readDisplay: (sessionId, cwd, opts) => readSessionDisplayState(host, sessionId, cwd, opts),
     buildActions: (opts) => buildResumeActionButtons(host, opts),
     canCompact: (agent, cwd) => canCompactSession(host, agent, cwd),
-  });
+  };
+}
+
+export function cmdResume(
+  host: CommandRouter,
+  args: string[],
+  ctx: CommandContext,
+  offset = 0,
+): CommandResult {
+  return buildResumeCommand(args, ctx, offset, resumeCommandDeps(host));
+}
+
+/** Re-render a resume detail card without binding the session. */
+export function buildResumeSessionCard(
+  host: CommandRouter,
+  agentKind: AgentKind,
+  sessionId: string,
+  ctx: CommandContext,
+  cwd = host.sessionStore.getCwd(ctx.userId),
+): CommandResult {
+  if (!cwd) return { text: '请先 /cd 设置工作目录' };
+  return buildResumeSessionCardFrom(resumeCommandDeps(host), agentKind, sessionId, cwd);
 }
 
 export function cmdActive(

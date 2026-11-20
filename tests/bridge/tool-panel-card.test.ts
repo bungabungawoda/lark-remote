@@ -120,10 +120,24 @@ describe('background job kill (terminal card)', () => {
     expect(runId).toBeTruthy();
 
     const before = connector._updates.length;
-    await router.handleCardAction({ cmd: 'job.kill', runId, jobId: 'bash-1' }, ctx);
+    const response = await router.handleCardAction(
+      { cmd: 'job.kill', runId, jobId: 'bash-1' },
+      ctx,
+    );
 
     // runner 拿到了真实 sessionId（不是卡片上抄的参数）
     expect(killed).toEqual([{ sessionId: 'session-jobs', jobId: 'bash-1' }]);
+
+    // 回调响应必须携带同一张重渲染卡：handler 在回包内 await PATCH，
+    // 空响应会让飞书恢复 pre-click 快照（任务已停但按钮还在）。
+    expect(response).toEqual(
+      expect.objectContaining({
+        card: expect.objectContaining({ type: 'raw' }),
+      }),
+    );
+    const responseCardJson = JSON.stringify((response as { card: { data: unknown } }).card.data);
+    expect(responseCardJson).not.toContain('npm run dev');
+    expect(responseCardJson).toContain('watch tests');
 
     // 同一张卡就地重渲染，且被杀掉的任务不再留在卡片上
     expect(connector._updates.length).toBe(before + 1);
@@ -181,5 +195,88 @@ describe('background job kill (terminal card)', () => {
     expect(texts).toContain('停止失败');
     expect(killed).toEqual([]);
     expect(connector._updates.length).toBe(updates);
+  });
+
+  it('stop 按钮 miss 时用终态快照重渲染原卡，去掉仍可点的停止按钮', async () => {
+    const { connector, router, ctx } = await runOnce();
+    const terminalJson = JSON.stringify(connector._cards[connector._cards.length - 1]);
+    const runId = /"runId":"([^"]+)"/.exec(terminalJson)?.[1];
+    expect(runId).toBeTruthy();
+
+    const updates = connector._updates.length;
+    const response = await router.handleCardAction({ cmd: 'stop', runId }, ctx);
+
+    expect(connector._updates.length).toBe(updates + 1);
+    const patched = connector._updates[connector._updates.length - 1];
+    expect(patched.messageId).toBe(ctx.messageId);
+    expect(JSON.stringify(patched.card)).not.toContain('"cmd":"stop"');
+
+    // stop 走即时入口：handler 结束后立刻回包，响应不带卡时飞书会恢复
+    // pre-click 快照，已消失的停止按钮又回来。
+    expect(response).toEqual(
+      expect.objectContaining({
+        card: expect.objectContaining({ type: 'raw' }),
+      }),
+    );
+    const responseCardJson = JSON.stringify((response as { card: { data: unknown } }).card.data);
+    expect(responseCardJson).not.toContain('"cmd":"stop"');
+  });
+
+  it('stop 成功时回调响应携带终态卡，停止按钮不会回来', async () => {
+    const connector = createStubConnector();
+    const sessionStore = new SessionStore();
+    sessionStore.setCwd('user1', tmpRoot);
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runner = {
+      isRunning: true,
+      stop: async () => {
+        release();
+      },
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'session-live',
+          cwd: tmpRoot,
+          model: 'opus',
+        };
+        await released;
+      },
+    } as unknown as Runner;
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+    });
+    const router = createRouterFixture({
+      tmpDir: tmpRoot,
+      config,
+      bridge,
+      sessionStore,
+      sessionReaderRegistry: new SessionReaderRegistry(),
+    }).router;
+    const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'stream-msg-id' };
+
+    const run = bridge.forwardToClaude('hello', ctx);
+    await vi.waitFor(() => expect(connector._cards.length).toBeGreaterThan(0));
+
+    const response = await router.handleCardAction({ cmd: 'stop' }, ctx);
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        card: expect.objectContaining({ type: 'raw' }),
+      }),
+    );
+    const cardJson = JSON.stringify((response as { card: { data: unknown } }).card.data);
+    expect(cardJson).not.toContain('"cmd":"stop"');
+    await run;
   });
 });

@@ -66,26 +66,34 @@ export class JobWatchLifecycle {
    * 而不是 activeRuns。成功后同步摘掉 state 里的任务并就地重渲染，否则按钮
    * 会留在卡片上而任务早已结束。
    */
-  async killBackgroundJob(runId: string, jobId: string, ctx: CommandContext): Promise<boolean> {
+  async killBackgroundJob(
+    runId: string,
+    jobId: string,
+    ctx: CommandContext,
+  ): Promise<object | undefined> {
     const snapshot = this.deps.getRunCardSnapshot(runId);
     const sessionId = snapshot?.state.sessionId;
-    if (!snapshot || !sessionId) return false;
+    if (!snapshot || !sessionId) return undefined;
     const runner = this.deps.getRunner(snapshot.cwd, snapshot.agentKind) as AgentRunner;
-    if (typeof runner.killJob !== 'function') return false;
+    if (typeof runner.killJob !== 'function') return undefined;
     const killed = await runner.killJob(sessionId, jobId);
-    if (!killed) return false;
+    if (!killed) return undefined;
     snapshot.state = removeBackgroundJob(snapshot.state, jobId);
+    // The callback response must carry this exact card: the PATCH below happens
+    // while the click handler is still awaiting, and Feishu restores the
+    // pre-click snapshot when the response has no `card` field.
+    const card = renderRunCard(snapshot.state, snapshot.options);
     // 与订阅帧共用一条串行链：两条 PATCH 并发时，后发先至的那条会把卡片写回
     // 旧内容（刚停掉的任务又显示成「运行中」）。
     await this.enqueueJobCardPatch(runId, async () => {
-      await this.deps.updateCardInPlace(renderRunCard(snapshot.state, snapshot.options), ctx);
+      await this.deps.updateCardInPlace(card, ctx);
       return true;
     });
     // 卡片上已经没有在跑的任务：不必再等宿主推下一帧，直接退订。
     if (!(snapshot.state.backgroundJobs ?? []).some(isLiveBackgroundJob)) {
       this.stopJobWatch(runId);
     }
-    return true;
+    return card;
   }
 
   /**
