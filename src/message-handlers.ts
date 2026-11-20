@@ -53,6 +53,18 @@ interface CardActionDispatchInput {
 }
 
 /**
+ * Immediate actions normally swallow their handler response: toasts already go
+ * through `forwardActionFeedback`, and `enqueueImmediate` used to drop the
+ * return value. A response carrying `card` is different — it is the inline
+ * replacement for the clicked card. Without it, Feishu restores the pre-click
+ * snapshot after the callback returns and the in-place PATCH becomes invisible
+ * (list search/page: text flashes then reverts).
+ */
+function passthroughCardResponse(res: CardActionResponse | void): CardActionResponse | void {
+  return res && typeof res === 'object' && 'card' in res ? res : undefined;
+}
+
+/**
  * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
  * 共用同一判定，防止将来加别名时两处漂移。
  */
@@ -368,13 +380,15 @@ async function dispatchCardAction(
       .catch((err: unknown) => ctx.logger.error('[control] card action feedback failed:', err));
   };
   if (isImmediateAction(actionValue.cmd)) {
-    await new Promise<void>((resolve) => {
+    const res = await new Promise<CardActionResponse | void>((resolve) => {
       ctx.bridge.enqueueImmediate(cwd, async () => {
         const res = await ctx.router.handleCardAction(fullValue, { userId, chatId, messageId });
-        forwardActionFeedback(res);
-        resolve();
+        resolve(res);
       });
     });
+    const cardResponse = passthroughCardResponse(res);
+    if (cardResponse) return cardResponse;
+    forwardActionFeedback(res);
     return;
   }
   await new Promise<void>((resolve) => {

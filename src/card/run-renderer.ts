@@ -1196,12 +1196,25 @@ function buildFinalAnswerPriorityCard(
     return { card: withoutSummary, finalAnswerStatus: 'full' };
   }
 
-  const overflowCard = assembleRunCard(state, options, [
-    ...fixedStart,
-    ...omittedBlocksHint(state),
-    markdownDiv(FINAL_ANSWER_OVERFLOW_MARKER),
-    ...controls,
-  ]);
+  // 正文交给文件后，卡片仍要回答「这次花了多少」：统计是溢出卡唯一还带信息的
+  // 部分。先按完整 summary 组装（后台任务也在），超预算就只留用量统计——
+  // 统计本身只有几行，不能因为任务清单长而整块丢掉。最后一档退回最小卡，
+  // 保证任何输入都不会产出飞书拒收的超限卡。
+  const buildOverflow = (summaryElements: object[]): object =>
+    assembleRunCard(state, options, [
+      ...fixedStart,
+      ...omittedBlocksHint(state),
+      markdownDiv(FINAL_ANSWER_OVERFLOW_MARKER),
+      ...summaryElements,
+      ...controls,
+    ]);
+  const overflowWithSummary = buildOverflow(summary);
+  // summary 首元素就是该终态的结论（done 是统计，error/interrupted 是原因），
+  // 丢掉后台任务清单后通常足够小；仍超限才退回最小卡。
+  const conclusionOnly = withinRunCardBudget(overflowWithSummary)
+    ? overflowWithSummary
+    : buildOverflow(summary.slice(0, 1));
+  const overflowCard = withinRunCardBudget(conclusionOnly) ? conclusionOnly : buildOverflow([]);
   return {
     card: overflowCard,
     finalAnswerStatus: 'overflow',
@@ -1344,21 +1357,12 @@ function summaryIdleTimeout(state: RunState, elements: object[]): void {
   );
 }
 
-/** 成功/目标继续/其它终态：usage 统计 + 后台任务（原 else 兜底分支）。 */
-function summaryResult(state: RunState, elements: object[]): void {
+/**
+ * 终态用量区块（纯文本）：run 卡 summary、溢出卡都从这里取，保证「统计长什么样」
+ * 只有一份定义。
+ */
+function usageStatsMarkdown(state: RunState): string {
   const result = state.resultSubtype ?? 'success';
-
-  const hasContent = state.blocks.length > 0 || !!state.finalAnswer?.content.trim();
-  // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
-  // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号。
-  // 所有会压缩的 agent（codex/claude/kimi/opencode/pi）
-  // 都经 streamCompact 走这条共享渲染路径，一处覆盖全部。
-  const empty = hasContent
-    ? ''
-    : state.operationKind === 'compaction'
-      ? '\n\n🗜 Compact 完成'
-      : '\n\n（未返回内容）';
-
   // goal 本 run 读不到（known=false）时不能写「已完成」：这是 GoalStateEvent
   // 契约里明令禁止的推断（读不到 ≠ 没有目标）。run 本身成功，只是目标维度未知。
   const goalUnknown = state.terminal === 'done' && state.goalKnown === false;
@@ -1366,7 +1370,7 @@ function summaryResult(state: RunState, elements: object[]): void {
   // RunState 的用量字段就是 formatUsageStats 的入参形态（同为
   // `UsageSnapshot`）——原先这里逐字段抄了 17 行，加一个字段要同时改
   // RunState、FinishMeta 和这张清单（§9.21）。
-  const usageStatsStr = formatUsageStats(state, {
+  return formatUsageStats(state, {
     showResult: true,
     result,
     // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。disarmed 时
@@ -1381,8 +1385,22 @@ function summaryResult(state: RunState, elements: object[]): void {
         ? { completedLabel: '✅ 本轮完成 · 目标状态未确认' }
         : {}),
   });
+}
 
-  elements.push(markdownDiv(usageStatsStr + empty));
+/** 成功/目标继续/其它终态：usage 统计 + 后台任务（原 else 兜底分支）。 */
+function summaryResult(state: RunState, elements: object[]): void {
+  const hasContent = state.blocks.length > 0 || !!state.finalAnswer?.content.trim();
+  // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
+  // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号。
+  // 所有会压缩的 agent（codex/claude/kimi/opencode/pi）
+  // 都经 streamCompact 走这条共享渲染路径，一处覆盖全部。
+  const empty = hasContent
+    ? ''
+    : state.operationKind === 'compaction'
+      ? '\n\n🗜 Compact 完成'
+      : '\n\n（未返回内容）';
+
+  elements.push(markdownDiv(usageStatsMarkdown(state) + empty));
 
   // 后台任务：跨 turn 生命周期，必须显式告知并可逐个停止。
   elements.push(...buildBackgroundJobsSection(state));

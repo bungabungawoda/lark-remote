@@ -80,19 +80,21 @@ describe('/resume pagination', () => {
     // 1. String offset 'abc' must be treated as 0: no throw, card updated in
     //    place with the first page. NaN slice would produce an empty page and
     //    a text fallback instead of the card.
-    await h.router.handleCardAction(
+    const page1 = await h.router.handleCardAction(
       { cmd: 'resume.page', agent: 'claude', offset: 'abc', pageSize: 5, cwd } as never,
       h.ctx,
     );
+    expect(page1).toMatchObject({ card: { type: 'raw' } });
     expect(h.connector._updates).toHaveLength(1);
     expect(JSON.stringify(h.connector._updates[0])).toContain('第 1/5 页 · 共 25 个会话');
 
     // 2. Numeric offset 25 (total=25, pageSize=5) aligns to the last page
     //    start 20: page label must be 第 5/5 页 (never 第 6/5 页 or misaligned).
-    await h.router.handleCardAction(
+    const page5 = await h.router.handleCardAction(
       { cmd: 'resume.page', agent: 'claude', offset: 25, pageSize: 5, cwd },
       h.ctx,
     );
+    expect(page5).toMatchObject({ card: { type: 'raw' } });
     expect(h.connector._updates).toHaveLength(2);
     expect(JSON.stringify(h.connector._updates[1])).toContain('第 5/5 页 · 共 25 个会话');
   });

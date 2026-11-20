@@ -82,9 +82,10 @@ export interface CardActionPayload {
 /**
  * Response a cardAction handler may return to give the clicking user native
  * immediate feedback (mirrors the SDK's CardActionResponse, passed through by
- * the connector). Currently only `toast` is used. Returning void/undefined
- * means "no immediate response" (original behavior). The index signature
- * keeps it assignable to the SDK's loose `Record<string, unknown>`.
+ * the connector). `toast` gives transient feedback; `card` replaces the
+ * clicked card in place. Returning void/undefined means "no immediate
+ * response" (original behavior). The index signature keeps it assignable to
+ * the SDK's loose `Record<string, unknown>`.
  */
 export interface CardActionResponse {
   toast?: {
@@ -92,6 +93,23 @@ export interface CardActionResponse {
     content: string;
   };
   [key: string]: unknown;
+}
+
+type ActionToast = NonNullable<CardActionResponse['toast']>;
+
+/**
+ * 构造携带重建卡的回调响应。飞书用响应体里的 `card` 原地替换 pre-click 卡；
+ * 只调 `updateCardInPlace` 而不把卡放进响应时，空响应会让飞书恢复点击前的
+ * 快照——列表翻页/筛选表现为「闪一下又回到原页」。
+ */
+export function responseWithCard(
+  card: object | undefined,
+  toast?: ActionToast,
+): CardActionResponse {
+  return {
+    ...(toast ? { toast } : {}),
+    ...(card ? { card: { type: 'raw', data: card } } : {}),
+  };
 }
 
 /**

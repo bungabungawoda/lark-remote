@@ -65,8 +65,8 @@ describe('order 别名卡片（order.alias*）', () => {
       { cmd: 'order.aliasEdit', orderId: order.id },
       ctx,
     );
-    // handleOrderAliasEdit 不返回 card，用 updateCardInPlace 原地弹卡
-    expect(returned).toBeUndefined();
+    // 回调响应必须携带编辑卡：只 updateCardInPlace + 空响应会被飞书恢复 pre-click 卡
+    expect(returned).toMatchObject({ card: { type: 'raw' } });
     const updated = mockBridge.updateCardInPlace as ReturnType<typeof vi.fn>;
     expect(updated).toHaveBeenCalled();
     const sentCard = updated.mock.calls[0][0] as {
@@ -74,6 +74,7 @@ describe('order 别名卡片（order.alias*）', () => {
       header: { title: { content: string } };
       body: { elements: Array<{ tag: string; name?: string; behaviors?: unknown[] }> };
     };
+    expect((returned as { card: { data: unknown } }).card.data).toBe(sentCard);
     expect(sentCard.schema).toBe('2.0');
     expect(sentCard.header.title.content).toContain('别名');
     // input 嵌在 column_set > column > elements 内，需递归查找（column_set 用 columns 存列）

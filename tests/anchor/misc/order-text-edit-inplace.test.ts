@@ -84,8 +84,9 @@ describe('Anchor: order.textEdit opens input card in place', () => {
     // input name + behaviors callback cmd
     expect(cardStr).toContain('"name":"text"');
     expect(cardStr).toContain('"cmd":"order.textInput"');
-    // handleOrderTextEdit returns void (no toast — the edit card itself is the affordance)
-    expect(response).toBeUndefined();
+    // 回调响应必须携带编辑卡：只 updateCardInPlace + 空响应会被飞书恢复 pre-click 卡
+    expect(response).toMatchObject({ card: { type: 'raw' } });
+    expect(JSON.stringify((response as { card: { data: unknown } }).card.data)).toBe(cardStr);
   });
 });
 

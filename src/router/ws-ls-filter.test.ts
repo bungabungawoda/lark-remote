@@ -45,6 +45,7 @@ type CardEl = {
 };
 
 type Card = { schema?: string; body?: { elements?: CardEl[] } };
+type CardActionResponseLike = { card?: { type?: string; data?: Card } };
 
 /** 深度展开 column_set/column 的嵌套元素（input 与按钮都藏在 column.elements 里）。 */
 function flatten(els: CardEl[]): CardEl[] {
@@ -72,6 +73,11 @@ function allText(card: Card | undefined): string {
 function payloadOf(el: CardEl): CardActionPayload | null {
   const v = el.behaviors?.find((b) => b.type === 'callback')?.value;
   return v ?? null;
+}
+
+function responseCard(res: unknown): Card | undefined {
+  const card = (res as CardActionResponseLike).card;
+  return card?.type === 'raw' ? card.data : undefined;
 }
 
 /**
@@ -510,9 +516,21 @@ describe('ws.filter / ls.filter handler', () => {
     });
     const res = await router.handleCardAction({ cmd: 'ws.filter', inputValue: 'alpha' }, ctx);
     expect(toastOf(res)).toMatchObject({ type: 'success', content: '筛选："alpha"' });
-    const text = allText(lastUpdatedCard(connector));
+    const text = allText(responseCard(res) ?? lastUpdatedCard(connector));
     expect(text).toContain('proj-alpha');
     expect(text).not.toContain('proj-beta');
+  });
+
+  it('ws.filter / ws.page 的回调响应携带重建卡（防飞书回退到 pre-click 卡）', async () => {
+    const { router } = makeFixture({ workspaces: eight });
+
+    const filtered = await router.handleCardAction({ cmd: 'ws.filter', inputValue: 'w1' }, ctx);
+    const filteredCard = responseCard(filtered);
+    expect(allText(filteredCard)).toContain('筛选："w1"');
+
+    const paged = await router.handleCardAction({ cmd: 'ws.page', offset: 5 }, ctx);
+    const pagedCard = responseCard(paged);
+    expect(allText(pagedCard)).toContain('**2/2**');
   });
 
   it('提交空串/纯空白 = 清除筛选，恢复完整列表且卡片不再带 q', async () => {
@@ -562,6 +580,25 @@ describe('ws.filter / ls.filter handler', () => {
     expect(text).not.toContain('筛选：');
     expect(text).toContain('readme.md');
     expect(text).toContain('共 1 目录, 2 文件');
+  });
+
+  it('ls.filter / ls.page 的回调响应携带重建卡（防飞书回退到 pre-click 卡）', async () => {
+    const { router, root } = makeFixture({
+      dirs: ['foo_dir'],
+      files: ['foo.txt', 'bar.txt'],
+    });
+
+    const filtered = await router.handleCardAction(
+      { cmd: 'ls.filter', path: root, inputValue: 'foo' },
+      ctx,
+    );
+    const filteredCard = responseCard(filtered);
+    expect(allText(filteredCard)).toContain('foo.txt');
+    expect(allText(filteredCard)).not.toContain('bar.txt');
+
+    const paged = await router.handleCardAction({ cmd: 'ls.page', path: root, offset: 0 }, ctx);
+    const pagedCard = responseCard(paged);
+    expect(allText(pagedCard)).toContain('bar.txt');
   });
 
   it('formValue 回退通道也能取到提交值（inputValue 缺失时）', async () => {

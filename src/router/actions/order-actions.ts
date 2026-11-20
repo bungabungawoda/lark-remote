@@ -6,7 +6,12 @@ import { ORDER_PAGE_SIZE } from '../commands/order.js';
 import { WS_PAGE_SIZE } from '../commands/ws.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
-import { CARD_PAYLOAD_MISSING, payloadOffset, searchQueryFrom } from './shared.js';
+import {
+  CARD_PAYLOAD_MISSING,
+  payloadOffset,
+  responseWithCard,
+  searchQueryFrom,
+} from './shared.js';
 import * as commandActions from './command-actions.js';
 import * as lsActions from './ls-actions.js';
 import { mintQueueTaskKey } from './queue-actions.js';
@@ -129,10 +134,11 @@ export async function handleOrderDelete(
   // Delete the order
   host.orderStore.remove(orderId);
 
-  // Refresh the order list and update card in place, preserving current page
-  await refreshListCard(host, 'order', value, ctx);
+  // Refresh the order list in place, preserving current page. The rebuilt card
+  // must ride the callback response, or Feishu restores the pre-click snapshot.
+  const card = await refreshListCard(host, 'order', value, ctx);
 
-  return { toast: { type: 'success', content: '已删除指令' } };
+  return responseWithCard(card, { type: 'success', content: '已删除指令' });
 }
 
 /**
@@ -149,8 +155,8 @@ export async function handleOrderPage(
     return { toast: { type: 'error', content: paging.error } };
   }
   // cmdOrder internally clamps stale/out-of-range offsets
-  await refreshListCard(host, 'order', { offset: paging.offset }, ctx);
-  return { toast: { type: 'success', content: '' } };
+  const card = await refreshListCard(host, 'order', { offset: paging.offset }, ctx);
+  return responseWithCard(card, { type: 'success', content: '' });
 }
 
 /**
@@ -232,6 +238,7 @@ export async function showOrderEditCard(
     },
   };
   await host.bridge.updateCardInPlace(editCard, ctx);
+  return responseWithCard(editCard);
 }
 
 export function findOrderForEdit(host: CommandRouter, orderId?: string) {
@@ -405,12 +412,10 @@ export async function handleWsUse(
   }
 
   // Success: send auto-resume card, or a persistent text confirmation when
-  // there is no history session. Toast alone is insufficient: for this
-  // immediate action the callback response is swallowed by enqueueImmediate
-  // (fire-and-forget), and even if delivered it is transient — the user gets
-  // no perceivable feedback on the switch. Same rationale as config.save
-  // agent-switch notice: persistent message first, toast only as a
-  // fallback if sendResult fails.
+  // there is no history session. Toast alone is insufficient because it is
+  // transient — the user gets no perceivable feedback on the switch after it
+  // disappears. Same rationale as config.save agent-switch notice: persistent
+  // message first, toast only as a fallback if sendResult fails.
   let fallbackToast: string | undefined;
   if (useResult.card || useResult.text) {
     const sent = await host.bridge.sendResult(useResult, ctx);
@@ -419,18 +424,18 @@ export async function handleWsUse(
     }
   }
 
-  // Refresh the /ws list card in place so "recent" sort is immediately visible
-  await refreshListCard(host, 'ws', value, ctx);
+  // Refresh the /ws list card so "recent" sort is immediately visible. The
+  // rebuilt card must also ride the callback response: an empty response after
+  // the PATCH makes Feishu restore the pre-click snapshot.
+  const card = await refreshListCard(host, 'ws', value, ctx);
 
   // Toast feedback (suppress text when a persistent message was already sent).
-  // 兜底文案必须用 warning 型：ws.use 不在 DIRECT_RETURN_CMDS，toast 经
-  // enqueueImmediate fire-and-forget，而 forwardActionFeedback 只转发
-  // error/warning 型——success 型兜底会被双重吞掉，点击毫无反馈。
-  return {
-    toast: fallbackToast
-      ? { type: 'warning', content: fallbackToast }
-      : { type: 'success', content: '' },
-  };
+  // 兜底文案必须用 warning 型：forwardActionFeedback 只转发 error/warning，
+  // 回调响应异常时 success 型兜底会被静默吞掉。
+  return responseWithCard(
+    card,
+    fallbackToast ? { type: 'warning', content: fallbackToast } : { type: 'success', content: '' },
+  );
 }
 
 /**
@@ -454,11 +459,14 @@ export async function handleWsRemove(
   const result = commandActions.cmdWs(host, ['remove', name], ctx);
   const text = result.text ?? `删除 workspace "${name}" 失败`;
 
-  // Rebuild the /ws list card and update it in place, preserving the page
-  // the user was on when they clicked 删除.
-  await refreshListCard(host, 'ws', value, ctx);
+  // Rebuild the /ws list card, preserving the page the user was on when they
+  // clicked 删除. Return it in the callback response for the inline replacement.
+  const card = await refreshListCard(host, 'ws', value, ctx);
 
-  return { toast: { type: text.startsWith('已删除') ? 'success' : 'error', content: text } };
+  return responseWithCard(card, {
+    type: text.startsWith('已删除') ? 'success' : 'error',
+    content: text,
+  });
 }
 
 /**
@@ -475,8 +483,8 @@ export async function handleWsPage(
     return { toast: { type: 'error', content: paging.error } };
   }
   // cmdWs internally clamps stale/out-of-range offsets
-  await refreshListCard(host, 'ws', { offset: paging.offset, q: value.q }, ctx);
-  return { toast: { type: 'success', content: '' } };
+  const card = await refreshListCard(host, 'ws', { offset: paging.offset, q: value.q }, ctx);
+  return responseWithCard(card, { type: 'success', content: '' });
 }
 
 /**
@@ -489,8 +497,11 @@ export async function handleWsFilter(
   ctx: CommandContext,
 ): Promise<CardActionResponse> {
   const q = searchQueryFrom(value);
-  await refreshListCard(host, 'ws', { offset: 0, q }, ctx);
-  return { toast: { type: 'success', content: q ? `筛选："${q}"` : '已清除筛选' } };
+  const card = await refreshListCard(host, 'ws', { offset: 0, q }, ctx);
+  return responseWithCard(card, {
+    type: 'success',
+    content: q ? `筛选："${q}"` : '已清除筛选',
+  });
 }
 
 /**
@@ -506,9 +517,7 @@ export async function handleWsSort(
   const current = host.wsSortPreference.get(userId) ?? 'recent';
   const next = current === 'recent' ? 'alpha' : 'recent';
   host.wsSortPreference.set(userId, next);
-  await refreshListCard(host, 'ws', { offset: 0, q: value.q }, ctx);
+  const card = await refreshListCard(host, 'ws', { offset: 0, q: value.q }, ctx);
   const nextLabel = next === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
-  return {
-    toast: { type: 'success', content: `已切换为 ${nextLabel}` },
-  };
+  return responseWithCard(card, { type: 'success', content: `已切换为 ${nextLabel}` });
 }

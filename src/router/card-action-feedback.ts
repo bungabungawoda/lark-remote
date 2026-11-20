@@ -3,10 +3,10 @@
  *
  * `src/index.ts` 的 card action 分发只有两类出口：`DIRECT_RETURN_CMDS` 同步
  * return 给飞书回调（toast 能弹），其余走 `bridge.enqueueImmediate` /
- * `bridge.enqueue`——fire-and-forget，回调响应早已被飞书收走，handler 返回的
- * toast 无处可去。本模块给出异步出口应转发的文案：失败/告警换成一条持久文本
- * 消息（卡片只承载成功态，失败在刷新后的卡片上完全看不出来），成功类不回执
- * （逐次回执会把聊天刷成日志）。
+ * `bridge.enqueue`。即时动作带 `card` 的响应由入口层原样回给飞书；不带 `card`
+ * 的响应（以及串行队列路径）里，handler 返回的 toast 无处可去，本模块给出要
+ * 转发的文案：失败/告警换成一条持久文本消息（卡片只承载成功态，失败在刷新后
+ * 的卡片上完全看不出来），成功类不回执（逐次回执会把聊天刷成日志）。
  */
 
 /** 只转发这两类；success/info/loading 由原地刷新的卡片表达。 */

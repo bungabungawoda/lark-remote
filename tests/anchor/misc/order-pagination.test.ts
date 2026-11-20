@@ -163,6 +163,8 @@ describe('/order pagination anchor tests', () => {
     const resp = response as { toast?: { type: string; content: string } };
     expect(resp.toast).toBeDefined();
     expect(resp.toast!.type).toBe('success');
+    // 回调响应必须携带重建卡，否则飞书会把 PATCH 覆盖回 pre-click 卡
+    expect(response).toMatchObject({ card: { type: 'raw' } });
   });
 
   it('test_anchor_order_pagination_no_v1_action_container_regression_200861', async () => {
@@ -232,6 +234,7 @@ describe('/order pagination anchor tests', () => {
     const lastCard = updatedCards[updatedCards.length - 1];
     const cardStr = JSON.stringify(lastCard);
     expect(cardStr).not.toContain('指令 9');
+    expect(response).toMatchObject({ card: { type: 'raw' } });
     // Total should now be 24
     expect(cardStr).toContain('共 24 条');
     // Should stay on page 2 (offset=PAGE_SIZE preserved after delete)

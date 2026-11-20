@@ -12,6 +12,7 @@ import {
   applyNewSession,
   CARD_PAYLOAD_MISSING,
   normalizePageArgs,
+  responseWithCard,
 } from './shared.js';
 
 /**
@@ -105,7 +106,7 @@ export async function handleResumePage(
     };
   }
   await host.bridge.updateCardInPlace(result.card, ctx);
-  return { toast: { type: 'success', content: '' } };
+  return responseWithCard(result.card, { type: 'success', content: '' });
 }
 
 /**
@@ -127,7 +128,7 @@ export async function handleActivePage(
     return { toast: { type: 'error', content: '当前没有正在进行中的任务' } };
   }
   await host.bridge.updateCardInPlace(result.card, ctx);
-  return { toast: { type: 'success', content: '' } };
+  return responseWithCard(result.card, { type: 'success', content: '' });
 }
 
 /**

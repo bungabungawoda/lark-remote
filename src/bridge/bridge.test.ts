@@ -1542,7 +1542,17 @@ describe('Bridge.forwardToClaude', () => {
         model: 'opus',
       },
       { type: 'final_answer', text: finalAnswer, itemId: 'final-1', complete: true },
-      { type: 'result', subtype: 'success', session_id: 's-final-overflow' },
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: 's-final-overflow',
+        usage: {
+          input_tokens: 5_000,
+          output_tokens: 800,
+          cache_read_tokens: 2_000,
+          total_tokens: 7_900,
+        },
+      },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({ mode: 'streaming', events }),
@@ -1568,7 +1578,12 @@ describe('Bridge.forwardToClaude', () => {
     expect(textMessages).toHaveLength(0);
     // 文件发出后清理临时文件，不留垃圾。
     expect(fs.existsSync(uploaded[0].path)).toBe(false);
-    expect(JSON.stringify(connector._cards.at(-1))).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    const overflowCard = JSON.stringify(connector._cards.at(-1));
+    expect(overflowCard).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    // 正文走了文件通道，卡片仍是这次 run 的统计入口：溢出不得连带吞掉用量。
+    expect(overflowCard).toContain('Input token - 5K');
+    expect(overflowCard).toContain('Output token - 800');
+    expect(overflowCard).toContain('Total token - 8K');
   });
 
   it('reports a failed final-answer file send with a card, not plain text', async () => {

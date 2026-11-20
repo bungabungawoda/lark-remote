@@ -6,7 +6,7 @@ import type { AgentKind } from '../../agent-kinds.js';
 import { agentDisplayName } from '../../card/card-shared.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionResponse } from './shared.js';
-import { CARD_PAYLOAD_MISSING } from './shared.js';
+import { CARD_PAYLOAD_MISSING, responseWithCard } from './shared.js';
 
 export async function queuePayloadOrReply(
   host: CommandRouter,
@@ -394,7 +394,7 @@ export async function handleQueueEdit(
   host: CommandRouter,
   value: { cwd?: string; messageId?: string },
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const payload = await queuePayloadOrReply(host, value, ctx);
   if (!payload) return;
   const { cwd, messageId } = payload;
@@ -454,6 +454,7 @@ export async function handleQueueEdit(
 
   // 原地更新原排队卡片，而不是发送新卡片
   await host.bridge.updateCardInPlace(editCard, ctx);
+  return responseWithCard(editCard);
 }
 
 /**

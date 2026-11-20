@@ -7,7 +7,7 @@ import { LS_PAGE_SIZE, recordTrail } from '../commands/ls.js';
 import type { LsTrailEntry } from '../commands/ls.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
-import { deliverFileToFeishu, payloadOffset, searchQueryFrom } from './shared.js';
+import { deliverFileToFeishu, payloadOffset, responseWithCard, searchQueryFrom } from './shared.js';
 import * as commandActions from './command-actions.js';
 
 /**
@@ -52,7 +52,7 @@ export async function handleLsSwitch(
   host: CommandRouter,
   value: CardActionPayload,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const targetPath = value.path;
   if (!targetPath) {
     await host.bridge.sendResult({ text: '卡片 payload 缺少 path' }, ctx);
@@ -90,9 +90,10 @@ export async function handleLsSwitch(
     undefined,
     readTrail(value),
   );
-  await refreshLsCard(host, card, ctx);
+  const updated = await refreshLsCard(host, card, ctx);
   // Message channel: send switch confirmation / auto-resume card to chat
   await host.bridge.sendResult(notifyResult, ctx);
+  return responseWithCard(updated);
 }
 
 /**
@@ -102,7 +103,7 @@ export async function handleLsRefresh(
   host: CommandRouter,
   value: CardActionPayload,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const targetPath = value.path;
   const offset = value.offset ?? 0;
   const trail = readTrail(value);
@@ -112,7 +113,7 @@ export async function handleLsRefresh(
     targetPath && isDirectorySafe(targetPath)
       ? commandActions.cmdLs(host, [targetPath], ctx, offset, value.root, value.q, trail)
       : commandActions.cmdLs(host, [], ctx, offset, value.root, value.q, trail);
-  await refreshLsCard(host, card, ctx);
+  return responseWithCard(await refreshLsCard(host, card, ctx));
 }
 
 /**
@@ -125,12 +126,13 @@ export async function refreshLsCard(
   host: CommandRouter,
   result: CommandResult,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<object | undefined> {
   if (result.card) {
     await host.bridge.updateCardInPlace(result.card, ctx);
-    return;
+    return result.card;
   }
   await host.bridge.sendResult({ text: result.text ?? '读取目录失败' }, ctx);
+  return undefined;
 }
 
 /**
@@ -167,7 +169,7 @@ export async function handleLsPage(
   }
   // 直接更新卡片，与 ls.browse/ls.refresh 行为一致
   await host.bridge.updateCardInPlace(card.card, ctx);
-  return { toast: { type: 'success', content: '' } };
+  return responseWithCard(card.card, { type: 'success', content: '' });
 }
 
 /**
@@ -204,7 +206,10 @@ export async function handleLsFilter(
     return { toast: { type: 'error', content: card.text ?? '读取目录失败' } };
   }
   await host.bridge.updateCardInPlace(card.card, ctx);
-  return { toast: { type: 'success', content: q ? `筛选："${q}"` : '已清除筛选' } };
+  return responseWithCard(card.card, {
+    type: 'success',
+    content: q ? `筛选："${q}"` : '已清除筛选',
+  });
 }
 
 /**
@@ -214,7 +219,7 @@ export async function handleLsBrowse(
   host: CommandRouter,
   value: CardActionPayload,
   ctx: CommandContext,
-): Promise<void> {
+): Promise<CardActionResponse | void> {
   const targetPath = value.path;
   if (!targetPath) {
     await host.bridge.sendResult({ text: '卡片 payload 缺少 path' }, ctx);
@@ -244,7 +249,7 @@ export async function handleLsBrowse(
     undefined,
     nextTrail,
   );
-  await refreshLsCard(host, card, ctx);
+  return responseWithCard(await refreshLsCard(host, card, ctx));
 }
 
 /**

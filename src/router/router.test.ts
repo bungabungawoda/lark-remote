@@ -787,7 +787,8 @@ describe('CommandRouter', () => {
 
     const subButton = findButtonValue(startCard.body.elements, '📁 sub');
     expect(subButton).toMatchObject({ cmd: 'ls.browse', path: fs.realpathSync(subDir), root: cwd });
-    await router.handleCardAction(subButton as never, ctx);
+    const browseRes = await router.handleCardAction(subButton as never, ctx);
+    expect(browseRes).toMatchObject({ card: { type: 'raw' } });
 
     const subCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
     expect(findButtonValue(subCard.body.elements, '返回')).toMatchObject({
@@ -823,7 +824,8 @@ describe('CommandRouter', () => {
     const switchValue = findButtonValue(deepCard.body.elements, '切换');
     expect(switchValue).toMatchObject({ cmd: 'ls.switch', path: deepReal, root: cwd });
 
-    await router.handleCardAction(switchValue as never, ctx);
+    const switchRes = await router.handleCardAction(switchValue as never, ctx);
+    expect(switchRes).toMatchObject({ card: { type: 'raw' } });
     expect(sessionStore.getCwd('user1')).toBe(deepReal);
 
     // 切换后的卡片仍以 cwd 之后的**原始起点**为 root：「返回」指向 cwd 而非 deep
@@ -912,12 +914,13 @@ describe('CommandRouter', () => {
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
     // Simulate ls.page callback for page 2 (offset=30)
     const ctxWithMsgId = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
-    await router.handleCardAction(
+    const pageRes = await router.handleCardAction(
       { cmd: 'ls.page', path: fs.realpathSync(tmpDir), offset: 30 },
       ctxWithMsgId,
     );
-    // handleLsPage now updates card in place via bridge.updateCardInPlace
-    // The result is just a toast response. Check the updated card in connector._cards
+    expect(pageRes).toMatchObject({ card: { type: 'raw' } });
+    // handleLsPage updates the card in place and returns it in the callback
+    // response. Check the updated card in connector._cards.
     expect(connector._cards.length).toBeGreaterThan(0);
     const card = connector._cards[connector._cards.length - 1] as {
       body: { elements: TestCardElement[] };
@@ -3029,16 +3032,15 @@ describe('CommandRouter', () => {
       await router.handle('/ws save proj', ctx);
       connector._sent.length = 0;
       // Simulate send failure: sendResult resolves false → handler falls back
-      // to a toast carrying the switch text. 兜底 toast 用 warning 型
-      // ws.use 不在 DIRECT_RETURN_CMDS，toast 经
-      // enqueueImmediate fire-and-forget，forwardActionFeedback 只转发
-      // error/warning——success 型兜底会被双重吞掉，点击毫无反馈。
+      // to a toast carrying the switch text. 兜底 toast 用 warning 型：
+      // forwardActionFeedback 只转发 error/warning，success 型兜底会被吞掉。
       connector.sendWithRetry = async () => {
         throw new Error('send failed');
       };
       const result = await router.handleCardAction({ cmd: 'ws.use', name: 'proj' }, ctx);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         toast: { type: 'warning', content: expect.stringContaining('已切换到') },
+        card: { type: 'raw' },
       });
     });
 
@@ -4285,10 +4287,11 @@ describe('/active card pagination', () => {
     const runs = makeAgentRuns(45);
     const { router, connector } = createActiveRouter(runs);
     // Simulate page=1 (offset=20) via cardAction
-    await router.handleCardAction(
+    const midRes = await router.handleCardAction(
       { cmd: 'active.page', offset: 20 },
       { userId: 'user1', chatId: 'chat1', messageId: 'msg1' },
     );
+    expect(midRes).toMatchObject({ card: { type: 'raw' } });
     const card = connector._cards.at(-1)!;
     const cardStr = JSON.stringify(card);
     // Middle page should show runs 20-39
@@ -4305,10 +4308,11 @@ describe('/active card pagination', () => {
   it('last page shows remaining runs without next button', async () => {
     const runs = makeAgentRuns(25);
     const { router, connector } = createActiveRouter(runs);
-    await router.handleCardAction(
+    const lastRes = await router.handleCardAction(
       { cmd: 'active.page', offset: 20 },
       { userId: 'user1', chatId: 'chat1', messageId: 'msg1' },
     );
+    expect(lastRes).toMatchObject({ card: { type: 'raw' } });
     const card = connector._cards.at(-1)!;
     const cardStr = JSON.stringify(card);
     // Last page: only runs 20-24

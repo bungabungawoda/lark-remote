@@ -413,13 +413,15 @@ describe('queue card actions (queue.edit / queue.input / queue.immediate)', () =
       const updateInPlaceSpy = vi.spyOn(bridge, 'updateCardInPlace');
       const sendResultSpy = vi.spyOn(bridge, 'sendResult');
 
-      await router.handleCardAction(
+      const editRes = await router.handleCardAction(
         { cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' },
         { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' },
       );
 
       // 验证：应该调用 updateCardInPlace（而不是只调用 sendResult 发新卡片）
       expect(updateInPlaceSpy).toHaveBeenCalledTimes(1);
+      // 回调响应必须携带编辑卡，否则飞书恢复 pre-click 卡、编辑框打不开
+      expect(editRes).toMatchObject({ card: { type: 'raw' } });
 
       // sendResult 不应该被直接调用（updateCardInPlace 内部 fallback 才会调）
       // 即 handleQueueEdit 不应该直接调用 sendResult

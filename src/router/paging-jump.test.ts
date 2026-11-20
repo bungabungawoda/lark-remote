@@ -132,11 +132,12 @@ describe('paginationBar 内置页码跳转输入', () => {
 
 describe('/ls 分页跳转', () => {
   it('/ls 输入页码直接跳到该页', async () => {
-    await router.handleCardAction(
+    const res = await router.handleCardAction(
       { cmd: 'ls.page', path: lsDir, pageSize: 30, inputValue: '3' },
       ctx,
     );
 
+    expect(res).toMatchObject({ card: { type: 'raw' } });
     const json = lastUpdatedCardJson();
     expect(json).toContain('第 3/3 页');
     expect(json).toContain('f-060.txt');
@@ -200,6 +201,7 @@ describe('/order 分页跳转', () => {
     );
 
     expect((res as { toast?: { type: string } }).toast?.type).toBe('success');
+    expect(res).toMatchObject({ card: { type: 'raw' } });
     const json = lastUpdatedCardJson();
     expect(json).toContain('第 2/2 页');
     expect(json).toContain('指令 12');

@@ -58,12 +58,33 @@ describe('renderRunCard', () => {
         source: 'protocol' as const,
       },
       blocks: [],
+      contextLength: 57_481,
+      contextLimit: 950_000,
+      compactCount: 2,
+      inputTokens: 1_111_805,
+      outputTokens: 87_861,
+      cacheReadTokens: 23_537_664,
+      totalTokens: 24_786_258,
+      cumulativeInputTokens: 1_100_000,
+      cumulativeOutputTokens: 87_000,
+      cumulativeCacheReadTokens: 23_000_000,
+      cumulativeTotalTokens: 24_200_000,
     } as RunState;
 
     const outcome = renderRunCardDetailed(state);
     expect(outcome.finalAnswerStatus).toBe('overflow');
     expect(outcome.finalAnswerText).toBe(finalAnswer);
-    expect(JSON.stringify(outcome.card)).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    const json = JSON.stringify(outcome.card);
+    expect(json).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    // 正文交给文件后，卡片仍是这次 run 唯一的统计入口：数字必须照常出现，
+    // 且与本 run 的统计口径一致（不是被文件通道吞掉）。
+    expect(json).toContain('Context - 57K (6%)');
+    expect(json).toContain('Compact - 2次');
+    expect(json).toContain('Input token - 1.1M');
+    expect(json).toContain('Output token - 88K');
+    expect(json).toContain('Cached token - 23.5M (95%)');
+    expect(json).toContain('Total token - 24.8M');
+    expect(json).toContain('累计 24.2M');
     expect(Buffer.byteLength(JSON.stringify(outcome.card), 'utf8')).toBeLessThanOrEqual(28_000);
   });
 
@@ -3873,6 +3894,48 @@ describe('renderRunCard background jobs', () => {
   it('renders nothing when no job outlives the turn', () => {
     const json = JSON.stringify(renderRunCard(doneState([])));
     expect(json).not.toContain('后台任务');
+  });
+
+  it('keeps usage stats on an overflow card and drops the job roster before the numbers', () => {
+    // 正文进文件后，卡片上唯一还有信息的就是统计。后台任务清单可以整块让位，
+    // 统计不能——用户最常问的「这次花了多少」只有这里能看到。
+    const jobs = Array.from({ length: 5 }, (_, i) => ({
+      id: `bash-${i}`,
+      // 长到「统计 + 任务清单」一起放不进 28KB，逼出「先丢任务、保住统计」。
+      label: `long-running-job-${i}-` + 'x'.repeat(10_000),
+      status: 'running' as const,
+    }));
+    const state = {
+      ...doneState(jobs),
+      finalAnswer: {
+        content: 'A'.repeat(40_000),
+        complete: true,
+        source: 'protocol' as const,
+      },
+      contextLength: 120_000,
+      compactCount: 3,
+      inputTokens: 5_000,
+      outputTokens: 800,
+      cacheReadTokens: 2_000,
+      totalTokens: 7_900,
+      cumulativeInputTokens: 50_000,
+      cumulativeOutputTokens: 3_000,
+      cumulativeTotalTokens: 55_000,
+    } as RunState;
+
+    const outcome = renderRunCardDetailed(state);
+    const json = JSON.stringify(outcome.card);
+    expect(outcome.finalAnswerStatus).toBe('overflow');
+    expect(json).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    expect(json).toContain('Input token - 5K');
+    expect(json).toContain('Output token - 800');
+    expect(json).toContain('Cached token - 2K (29%)');
+    expect(json).toContain('Total token - 8K');
+    expect(json).toContain('累计 55K');
+    // 证据：这一档真的丢了任务清单（不是碰巧全都装下了）。
+    expect(json).not.toContain('后台任务');
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
+    expect(countCardElements(outcome.card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
   });
 
   it('renders a short single-line command inline without a panel', () => {

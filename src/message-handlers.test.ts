@@ -171,6 +171,39 @@ describe('setupMessageHandlers', () => {
     expect(h.bridge.enqueueImmediate).not.toHaveBeenCalled();
   });
 
+  it('propagates card-bearing responses from immediate actions to Feishu', async () => {
+    const h = makeHarness();
+    const card = { schema: '2.0', body: { elements: [] } };
+    h.router.handleCardAction.mockResolvedValueOnce({
+      toast: { type: 'success', content: '' },
+      card: { type: 'raw', data: card },
+    } as never);
+
+    const response = await h.handlers.card?.(cardAction('ws.page'));
+
+    expect(response).toEqual({
+      toast: { type: 'success', content: '' },
+      card: { type: 'raw', data: card },
+    });
+    // Inline card replacement must not be duplicated as a text message.
+    expect(h.bridge.sendResult).not.toHaveBeenCalled();
+    expect(h.router.handleCardAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps forwarding toast-only immediate responses as before', async () => {
+    const h = makeHarness();
+
+    const response = await h.handlers.card?.(cardAction('ws.page'));
+
+    expect(response).toBeUndefined();
+    await vi.waitFor(() =>
+      expect(h.bridge.sendResult).toHaveBeenCalledWith(
+        { text: 'action failed' },
+        { userId: 'u1', chatId: 'c1', messageId: 'card-m1' },
+      ),
+    );
+  });
+
   it('queues non-direct card actions under a unique task key and forwards feedback', async () => {
     const h = makeHarness();
 
