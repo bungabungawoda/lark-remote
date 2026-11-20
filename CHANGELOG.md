@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7] - 2026-11-21
+
+### 修复
+
+- **即时卡片动作回传重建卡**：`queue.cancel`、`queue.immediate`、`stop`、`job.kill`、`stop.session` 在回调响应中直接携带重建后的卡片。此前只做后台 PATCH，飞书会用点击前快照覆盖它，表现为按钮继续可点、卡片停在「运行中」
+- **停止与恢复卡状态收口**：`stop` 成功返回被停 run 的终态卡，miss 时从终态快照重渲染；`stop.session` 终止宿主轮次后重建恢复卡并回传，不产生绑定会话副作用，跨目录旧卡按卡片自带 cwd 重建
+- **退出与回调预算有界**：`/exit`、`/restart` 前分别冲刷入站装配、配置卡 PATCH 与已提交队列工作，各阶段带固定预算，长 run 不再拖住退出；`compact` / `resume.compact` 改为入队即回包，避免排在长 run 后面时耗尽飞书 3 秒回调预算
+- **旧 resume 卡兼容**：完成通知卡的「切换到此会话」补带 cwd；旧卡缺 cwd 时回退到当前目录，由 `cmdResume` 校验 session 归属后再绑定
+- **附件等待 toast**：会话变更等待附件时的 toast 从非法 `pending` 改为 `loading`
+
+### 变更
+
+- **队列卡渲染收敛**：`QueueManager` 抽出 `buildCancelledQueueCard` / `buildExecutingQueueCard`，`markQueueCardExecuting` 与 `killBackgroundJob` 返回渲染后的卡片，后台 PATCH 与回调响应共用同一份内容
+
+### 测试
+
+- 新增回调响应携带禁用卡、`stop` / `job.kill` / `stop.session` 终态卡、`/exit` 有界退出与旧 `resume.use` 卡兼容回归用例
+
+### 文档
+
+- `docs/zh/architecture/design.md` 补充点击路径回调响应携带卡片的不变量，以及退出前冲刷的预算口径
+
 ## [0.7.6] - 2026-11-20
 
 ### 修复
