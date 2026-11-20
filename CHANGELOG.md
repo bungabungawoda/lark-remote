@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-11-20
+
+### 修复
+
+- **即时卡片操作回调透传重建卡**：`/ws`、`/ls`、`/order`、`/resume`、`/active`、`queue.edit` 等原地更新的即时动作，在回调响应中直接携带重建后的卡片。此前只 PATCH 不返回卡片，飞书会在回调结束后恢复点击前快照，表现为 `/ws` 搜索不生效、翻页闪回第 1 页
+- **溢出卡保留用量统计**：最终回答转文件后，卡片按「完整 summary → 仅终态结论 → 最小卡」逐档收紧，后台任务清单先让位，统计不再随正文一起消失
+- **分页与跳转偏移统一处理**：列表分页、跳页、筛选与删除后的刷新按同一偏移口径重建卡片，并补齐对应回归用例
+
+### 变更
+
+- **内部收敛**：抽出 CodeBuddy 身份、区域与模型状态机，统一进程存活探测、spawn 错误等待与原子写入辅助，删除无消费者埋点与结构等价快照。无用户可见行为变化
+
+### 测试
+
+- 新增即时动作响应卡守卫、溢出卡统计与分页跳转回归用例；移除结构等价快照用例，改由定向断言覆盖
+
+### 文档
+
+- `streaming-card.md` 补充溢出卡用量统计的降级顺序
+
 ## [0.7.5] - 2026-11-18
 
 ### 变更
